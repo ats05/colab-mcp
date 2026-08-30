@@ -6,6 +6,46 @@ This fork follows the upstream `1.0.x` baseline and tags fork-specific work
 with the date of the change. Upstream-merged work keeps its own commit
 history.
 
+## 2026-08-30 — notebook handoff, safe process lifecycle, and background cells
+
+### Added
+- All notebook and connection tools remain registered at startup; clients do
+  not need to implement `notifications/tools/list_changed`. Disconnected calls
+  return an explicit `COLAB_NOT_CONNECTED` error.
+- `open_colab_browser_connection(notebook_url)` accepts an existing HTTPS
+  Google Colab notebook URL. Safe query parameters are retained, old
+  MCP-token/port fragments are replaced, and a non-secret port/nonce identifies
+  the initial URL. `open_new_tab=false` prepares that URL for an existing tab
+  without opening another one; `get_colab_connection_info` returns the current
+  token, port, and complete URL separately for manual handoff.
+- `start_code_cell`, `get_code_execution`, and `list_code_executions` provide
+  bounded background execution tracking for long-running browser-side cells.
+  The local registry has TTL cleanup and shutdown cleanup; there is no cancel
+  operation because local cancellation cannot guarantee that Colab stops code
+  already submitted. Execution IDs are process-local (and therefore shared by
+  clients using one shared daemon, but not by separate stdio processes); after
+  a process disconnect, notebook state from `get_cells` is the supported source
+  of truth.
+- Process diagnostics scan both the registry and the OS process table. PID
+  start time, command line, and profile are checked before an explicit stop.
+  `--profile`, `--replace`, `--stop-pid`, and profile-scoped `--kill-stale`
+  make Claude Code/Codex coexistence and handoff explicit; normal startup does
+  not kill peers.
+- An opt-in `--transport streamable-http` mode runs one local stateful daemon
+  that Claude Code and Codex can share. The first client opens the Colab tab;
+  subsequent clients reuse that process's existing browser connection. The
+  default stdio mode is unchanged.
+- WebSocket read/write tasks are drained and their shutdown exceptions are
+  collected, preventing an anyio `BrokenResourceError` warning when Colab
+  closes during server cleanup.
+
+### Reviewed but not adopted
+- PR-1's direct Jupyter-kernel/GPU path and keepalive/reconnect options were
+  not merged. They change the execution backend, were not covered by the
+  existing browser E2E contract, and could duplicate or stop a running cell.
+  Long-cell support here keeps the established browser-side execution path and
+  makes its result observable through polling and subsequent `get_cells`.
+
 ## 2026-06-19 — E2E validated against real Colab + move_cell signature correction
 
 After driving the full smoke E2E against a real Colab notebook (see

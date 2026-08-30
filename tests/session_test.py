@@ -77,6 +77,10 @@ class TestDirectTools:
                 "delete_cell",
                 "move_cell",
                 "change_runtime",
+                "get_colab_connection_info",
+                "start_code_cell",
+                "get_code_execution",
+                "list_code_executions",
             }
 
     @pytest.mark.asyncio

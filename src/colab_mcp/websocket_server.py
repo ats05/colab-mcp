@@ -15,6 +15,7 @@
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 import asyncio
+import contextlib
 import logging
 import mcp.types as types
 from mcp.shared.message import SessionMessage
@@ -181,26 +182,49 @@ class ColabWebSocketServer:
             return
 
         async with self.connection_lock:
+            tasks: list[asyncio.Task] = []
             try:
                 self.connection_live.set()
 
                 reading_task = asyncio.create_task(self._read_from_socket(websocket))
                 writing_task = asyncio.create_task(self._write_to_socket(websocket))
-                _, pending = await asyncio.wait(
-                    [reading_task, writing_task], return_when=asyncio.FIRST_COMPLETED
-                )
+                tasks = [reading_task, writing_task]
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
-                for task in pending:
-                    task.cancel()
-
-            except websockets.exceptions.ConnectionClosed as e:
+            except ConnectionClosed as e:
                 logging.info(f"Connection closed: {e.code} - {e.reason}")
-                await self._read_stream_writer.send(
-                    Exception("Colab Frontend disconnected")
-                )
+                # The MCP client may already have closed its receive stream.
+                # Do not turn that normal disconnect into another task error.
+                with contextlib.suppress(
+                    anyio.BrokenResourceError,
+                    anyio.ClosedResourceError,
+                    anyio.EndOfStream,
+                ):
+                    await self._read_stream_writer.send(
+                        Exception("Colab Frontend disconnected")
+                    )
             except Exception as e:
                 logging.error(f"Unexpected error: {e}")
             finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, BaseException) and not isinstance(
+                            result,
+                            (
+                                asyncio.CancelledError,
+                                ConnectionClosed,
+                                anyio.BrokenResourceError,
+                                anyio.ClosedResourceError,
+                                anyio.EndOfStream,
+                            ),
+                        ):
+                            logging.error(
+                                "Unexpected WebSocket task error: %s", result
+                            )
                 self.connection_live.clear()
 
     async def __aenter__(self):

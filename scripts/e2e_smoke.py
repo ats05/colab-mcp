@@ -9,7 +9,8 @@ Usage:
 
 The disconnected smoke verifies:
   - Server starts cleanly
-  - All 9 tools are visible at startup (1 connection + 7 notebook + 1 GPU)
+  - All 13 tools are visible at startup (connection, notebook, GPU,
+    connection-info, and background-execution tools)
   - Each notebook tool returns NOT_CONNECTED_MSG when called without a browser
   - The old `execute_cell` no longer exists (rename regression check)
 
@@ -40,6 +41,10 @@ EXPECTED_TOOLS = {
     "delete_cell",
     "move_cell",
     "change_runtime",
+    "get_colab_connection_info",
+    "start_code_cell",
+    "get_code_execution",
+    "list_code_executions",
 }
 
 NOTEBOOK_STUBS = {
@@ -59,12 +64,24 @@ def _yellow(s): return f"\033[33m{s}\033[0m"
 def _bold(s): return f"\033[1m{s}\033[0m"
 
 
+def _result_text(result) -> str:
+    """Return textual content without assuming the result has a text block."""
+    return "\n".join(c.text for c in result.content if hasattr(c, "text"))
+
+
+def _result_has_payload(result) -> bool:
+    """Treat structured empty values (for example an empty list) as success."""
+    if _result_text(result):
+        return True
+    return getattr(result, "structured_content", None) is not None
+
+
 async def smoke_disconnected(client: Client) -> int:
     """Run the no-browser smoke checks. Returns count of failures."""
     failures = 0
     print(_bold("\n=== Disconnected smoke ==="))
 
-    print("\n[1/4] Listing tools...")
+    print("\n[1/5] Listing tools...")
     tools = await client.list_tools()
     tool_names = {t.name for t in tools}
     missing = EXPECTED_TOOLS - tool_names
@@ -76,16 +93,16 @@ async def smoke_disconnected(client: Client) -> int:
     if extra:
         print(_yellow(f"  EXTRA (unexpected but not fatal): {sorted(extra)}"))
     if not missing:
-        print(_green(f"  OK — all 9 expected tools present"))
+        print(_green("  OK — all 13 expected tools present"))
 
-    print("\n[2/4] Checking execute_cell was removed (rename regression)...")
+    print("\n[2/5] Checking execute_cell was removed (rename regression)...")
     if "execute_cell" in tool_names:
         print(_red("  FAIL — execute_cell still exists after rename"))
         failures += 1
     else:
         print(_green("  OK — execute_cell correctly removed"))
 
-    print("\n[3/4] Inspecting schemas of the 4 newly-added/renamed tools...")
+    print("\n[3/5] Inspecting schemas of the 4 newly-added/renamed tools...")
     target_tools = {"get_cells", "run_code_cell", "delete_cell", "move_cell"}
     for tool in tools:
         if tool.name not in target_tools:
@@ -95,7 +112,7 @@ async def smoke_disconnected(client: Client) -> int:
         param_names = sorted(props.keys())
         print(f"  {tool.name}({', '.join(param_names) or '<no params>'})")
 
-    print("\n[4/4] Calling notebook tools while disconnected — expect NOT_CONNECTED_MSG...")
+    print("\n[4/5] Calling notebook tools while disconnected — expect NOT_CONNECTED_MSG...")
     test_calls = [
         ("add_code_cell", {"code": "print('hi')"}),
         ("add_text_cell", {"content": "hello"}),
@@ -107,11 +124,40 @@ async def smoke_disconnected(client: Client) -> int:
     ]
     for name, args in test_calls:
         result = await client.call_tool(name, args)
-        text = "\n".join(c.text for c in result.content if hasattr(c, "text"))
+        text = _result_text(result)
         if "Not connected" in text or "open_colab_browser_connection" in text:
             print(_green(f"  OK — {name} returned NOT_CONNECTED_MSG"))
         else:
             print(_red(f"  FAIL — {name} returned unexpected: {text[:120]}"))
+            failures += 1
+
+    print("\n[5/5] Checking background execution and connection-info tools while disconnected...")
+    background = await client.call_tool("start_code_cell", {"cellId": "fake"})
+    background_text = _result_text(background)
+    if "COLAB_NOT_CONNECTED" in background_text:
+        print(_green("  OK — start_code_cell returned COLAB_NOT_CONNECTED"))
+    else:
+        print(_red(f"  FAIL — start_code_cell returned unexpected: {background_text[:120]}"))
+        failures += 1
+
+    info = await client.call_tool("get_colab_connection_info", {})
+    info_text = _result_text(info)
+    if "COLAB_MCP_NOT_INITIALIZED" not in info_text and _result_has_payload(info):
+        print(_green("  OK — get_colab_connection_info is callable"))
+    else:
+        print(_red("  FAIL — get_colab_connection_info returned no connection data"))
+        failures += 1
+
+    for name, args in (
+        ("get_code_execution", {"execution_id": "missing"}),
+        ("list_code_executions", {}),
+    ):
+        result = await client.call_tool(name, args)
+        text = _result_text(result)
+        if _result_has_payload(result) and not result.is_error:
+            print(_green(f"  OK — {name} is callable while disconnected"))
+        else:
+            print(_red(f"  FAIL — {name} returned no response"))
             failures += 1
 
     return failures
@@ -127,7 +173,7 @@ async def smoke_connected(client: Client) -> int:
     result = await client.call_tool("open_colab_browser_connection", {})
     text = "\n".join(c.text for c in result.content if hasattr(c, "text"))
     if "Connection successful" in text:
-        print(_green(f"  OK — connection established"))
+        print(_green("  OK — connection established"))
         print(f"    Server reply: {text[:200]}")
     else:
         print(_red(f"  FAIL — connection not established. Reply: {text}"))
@@ -232,7 +278,7 @@ async def main():
 
     print(_bold("\n=== Summary ==="))
     if failures == 0:
-        print(_green(f"All checks passed."))
+        print(_green("All checks passed."))
         sys.exit(0)
     else:
         print(_red(f"{failures} check(s) failed."))

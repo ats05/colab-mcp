@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
-[![Stars](https://img.shields.io/github/stars/SebastianGilPinzon/colab-mcp?style=social)](https://github.com/SebastianGilPinzon/colab-mcp)
+[![Stars](https://img.shields.io/github/stars/ats05/colab-mcp?style=social)](https://github.com/ats05/colab-mcp)
 
 An MCP server for controlling Google Colab from any AI coding agent. This fork fixes the bugs in the [official repo](https://github.com/googlecolab/colab-mcp) that block real day-to-day use and restores features Google removed upstream.
 
@@ -11,11 +11,14 @@ An MCP server for controlling Google Colab from any AI coding agent. This fork f
 
 Three concrete dolores that the official `googlecolab/colab-mcp` doesn't solve — and that this fork does:
 
-1. **Invisible tools** ([#54](https://github.com/googlecolab/colab-mcp/discussions/54), [#67](https://github.com/googlecolab/colab-mcp/discussions/67), [#69](https://github.com/googlecolab/colab-mcp/discussions/69)) — only `open_colab_browser_connection` appears in most MCP clients (Claude Code, Codex, Kiro IDE). The notebook tools rely on `notifications/tools/list_changed`, which these clients ignore. Without `get_cells` in particular, the bridge is effectively write-only: an agent can add cells but can't read state back.
+1. **Invisible tools** ([#54](https://github.com/googlecolab/colab-mcp/discussions/54), [#67](https://github.com/googlecolab/colab-mcp/discussions/67), [#69](https://github.com/googlecolab/colab-mcp/discussions/69)) — the upstream server only advertises `open_colab_browser_connection` until a browser connects. This fork registers the complete surface up front, so Claude Code and Codex can discover and call notebook tools without relying on `notifications/tools/list_changed`.
 2. **"Disconnected from the local Colab MCP server"** ([#84](https://github.com/googlecolab/colab-mcp/discussions/84)) — orphaned servers from prior Claude Code sessions hold ports that your browser tab still points at. Reconnecting from the tab silently fails.
 3. **No programmatic GPU control** — Google [removed](https://github.com/googlecolab/colab-mcp/discussions/41) the `--enable-runtime` feature entirely. You can't assign T4 / L4 / A100 without clicking in the browser.
 
-This fork fixes all three. All 9 tools (1 connection + 7 notebook + 1 GPU control) appear immediately, stale servers are auto-detected and clean-uppable, and GPUs are assignable from a single tool call.
+This fork fixes all three. All tools are registered at process startup (the
+client does not need `notifications/tools/list_changed`), stale servers are
+diagnosed from both the registry and the OS process table, and GPUs are
+assignable from a single tool call.
 
 > _Demo coming soon: `docs/demo.gif` (TODO — short asciinema of `change_runtime` → `add_code_cell` → `run_code_cell`)._
 
@@ -23,19 +26,20 @@ This fork fixes all three. All 9 tools (1 connection + 7 notebook + 1 GPU contro
 
 | Feature | Official | This Fork |
 |---------|----------|-----------|
-| Notebook tools visible at startup | No (needs browser + list_changed) | Yes (pre-registered, works with any client) |
+| Notebook tools visible at startup | No (needs browser + list_changed) | Yes (pre-registered, works with Claude Code and Codex) |
 | `change_runtime` tool (GPU control) | Removed | Working via OAuth |
 | OAuth token caching | N/A | Yes (authorize once, cached forever) |
 | Windows compatibility | Port 53919 blocked | Fixed (port 8085) |
 | ColabClient initialization | N/A | Fixed (Prod() env argument) |
-| Stale-server detection / cleanup | None — silent "Disconnected" | `--list-running` + `--kill-stale`, registry pruning on startup |
+| Stale-server detection / cleanup | None — silent "Disconnected" | Registry + OS process scan, PID/start-time/command validation, profile-scoped explicit actions |
 
 ## Available Tools
 
 | Tool | Requires Browser | Requires OAuth | Description |
 |------|:---:|:---:|-------------|
 | `change_runtime` | | Yes | Assign GPU: T4, L4, A100, or NONE |
-| `open_colab_browser_connection` | Yes | | Connect to a Colab notebook in your browser |
+| `open_colab_browser_connection` | Yes | | Connect to a Colab notebook; set `open_new_tab=false` to prepare a URL for an existing tab |
+| `get_colab_connection_info` | | | Return current token, port, and a complete connection URL for manual handoff |
 | `add_code_cell` | Yes | | Add a code cell to the notebook |
 | `add_text_cell` | Yes | | Add a markdown cell |
 | `get_cells` | Yes | | Read current notebook state (cells, IDs, contents, outputs) |
@@ -43,6 +47,9 @@ This fork fixes all three. All 9 tools (1 connection + 7 notebook + 1 GPU contro
 | `update_cell` | Yes | | Edit an existing cell by `cellId` |
 | `delete_cell` | Yes | | Delete a cell by `cellId` |
 | `move_cell` | Yes | | Move a cell to a new position by `cellId` |
+| `start_code_cell` | Yes | | Start `run_code_cell` in the background and return an `execution_id` |
+| `get_code_execution` | | | Poll a background execution's status/result |
+| `list_code_executions` | | | List retained background executions |
 
 > **Note:** `execute_cell` was renamed to `run_code_cell` in 2026-06-16 to match the browser-side handler name. Pass a `cellId` (from `add_code_cell` or `get_cells`) — the old `cellIndex` fallback was removed.
 
@@ -65,7 +72,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 2. Clone this repo
 
 ```bash
-git clone https://github.com/SebastianGilPinzon/colab-mcp.git
+git clone https://github.com/ats05/colab-mcp.git
 ```
 
 ### 3. Configure your MCP client
@@ -87,9 +94,94 @@ Add to your `.mcp.json` (Claude Code, Cursor, etc.):
 ### 4. Use it
 
 1. Restart your editor / reload window
-2. All 8 tools should appear immediately (`open_colab_browser_connection` + 7 notebook tools)
-3. Call `open_colab_browser_connection` — a Colab notebook opens in your browser
+2. All tools should appear immediately; no `tools/list_changed` notification is required
+3. Call `open_colab_browser_connection()` — the historical empty notebook opens in your browser
 4. Use `add_code_cell`, `run_code_cell`, `get_cells`, etc. to control the notebook
+
+To open an existing notebook, pass its HTTPS Colab URL:
+
+```text
+open_colab_browser_connection(notebook_url="https://colab.research.google.com/drive/<id>")
+```
+
+The query string keeps safe notebook parameters and adds a non-secret port and
+nonce for the initial browser URL. The fragment is replaced with the current
+token and port when a new browser connection is required, so an old cached
+token/port pair is not reused. A shared daemon opens only one initial tab;
+subsequent MCP clients reuse that daemon connection.
+
+For training or other long cells, use the asynchronous tools:
+
+```text
+start_code_cell(cellId="train-cell")
+get_code_execution(execution_id="<returned id>")
+list_code_executions()
+```
+
+`start_code_cell` returns immediately with `status: "running"`. The local
+registry retains bounded status/result history and expires terminal records;
+there is intentionally no cancel tool because cancelling a local task cannot
+guarantee that code already submitted to Colab stops. The returned
+`execution_id` belongs only to this MCP process; it is not portable to the
+other MCP process. A process handoff may leave an already accepted Colab
+cell running, but the browser/MCP bridge cannot guarantee remote continuation
+or completion after disconnect. Reconnect to the same `notebook_url` and use
+`get_cells` as the source of truth for the notebook's execution/output state.
+Durable progress tracking (for example, a cell heartbeat written to external
+storage) is intentionally outside this local registry's scope.
+
+### One shared daemon for Claude Code and Codex
+
+For a handoff that must keep the *same browser tab* and the same Colab
+WebSocket connection, run one long-lived Streamable HTTP daemon and point both
+clients at its `/mcp` endpoint. FastMCP 2.14.5 keeps the HTTP sessions separate
+while the notebook proxy and its single browser connection remain shared in
+the daemon process.
+
+Start it once in a regular terminal and leave it running:
+
+```bash
+uv run --directory /path/to/colab-mcp colab-mcp \
+  --transport streamable-http --host 127.0.0.1 --port 8765
+```
+
+Claude Code (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "colab-shared": {
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}
+```
+
+Codex (`config.toml`):
+
+```toml
+[mcp_servers.colab_shared]
+url = "http://127.0.0.1:8765/mcp"
+```
+
+In the first client only, call
+`open_colab_browser_connection(notebook_url="https://colab.research.google.com/drive/<id>", open_new_tab=false)`.
+The tool returns the complete credential-bearing URL without opening a
+browser; paste it into the already-open target Colab tab's address bar. In the
+other client, do not call the open tool again; call `get_cells` (or another
+notebook tool) through the same HTTP URL. If both clients race to call the
+open tool, the daemon serializes the initial browser open and refuses to
+create a second tab. Use the default `open_new_tab=true` only when creating
+the initial browser tab is desired.
+
+Keep the daemon alive while switching clients. Its Colab token is generated in
+memory and is not persisted. If the daemon itself is restarted, its token and
+local WebSocket port change; preserving an already connected tab across that
+restart is not guaranteed, so use the returned complete URL to reload the
+existing tab or start a new initial connection.
+
+The HTTP endpoint is intentionally bound to `127.0.0.1` in the example. Do
+not expose an unauthenticated shared daemon on a LAN or public interface.
 
 ---
 
@@ -168,7 +260,7 @@ Agent: get_cells()
 
 ## CLI Reference
 
-Once installed (via `uv run` or `uvx git+https://github.com/SebastianGilPinzon/colab-mcp`), the `colab-mcp` command supports these flags:
+Once installed (via `uv run` or `uvx git+https://github.com/ats05/colab-mcp`), the `colab-mcp` command supports these flags:
 
 | Flag | Description |
 |------|-------------|
@@ -176,16 +268,95 @@ Once installed (via `uv run` or `uvx git+https://github.com/SebastianGilPinzon/c
 | `-l DIR`, `--log DIR` | Write logs to `DIR`. Defaults to a temp dir under `%TEMP%` / `$TMPDIR` |
 | `-p`, `--enable-proxy` | Enable the runtime proxy that exposes browser-based notebook tools. On by default |
 | `--client-oauth-config PATH` | Path to OAuth client-secrets JSON. Enables the `change_runtime` tool for programmatic GPU assignment |
-| `--list-running` | Print every currently-running `colab-mcp` server (pid, port, host, start time) and exit. Useful when "Disconnected from the local Colab MCP server" appears |
-| `--kill-stale` | Terminate every running `colab-mcp` server, clear its registry entry, and exit. Use this from a regular shell (NOT from inside Claude Code) before starting a fresh session |
+| `--list-running` | Print verified servers in the selected profile, including OS-discovered servers not in the registry |
+| `--profile NAME` | Select an independent process group (default: `default`; useful for `claude` and `codex`) |
+| `--replace` | Explicitly stop verified peers in this profile before starting. Never implied by normal startup |
+| `--stop-pid PID` | Explicitly stop one verified server in this profile |
+| `--kill-stale` | Explicitly stop verified servers in this profile, including ones outside the registry. Add `--all-profiles` only when intentionally stopping every profile |
+| `--all-profiles` | Broaden an explicit `--stop-pid`/`--kill-stale` action; it has no effect on normal startup |
+| `--transport` | `stdio` by default; use `streamable-http` for one shared local daemon |
+| `--host` | HTTP bind address (default `127.0.0.1`; ignored for stdio) |
+| `--port` | HTTP port (FastMCP default when omitted; ignored for stdio) |
+| `--path` | HTTP endpoint path (default `/mcp`; ignored for stdio) |
 
-The server maintains a tiny registry at `%LOCALAPPDATA%\colab-mcp\registry.json` (Windows) or `~/.colab-mcp/registry.json` (macOS/Linux). Each running instance writes a `{pid, port, host, started_at}` entry on startup and removes it on clean shutdown. Stale entries from crashed processes are pruned automatically the next time `colab-mcp` starts.
+The server maintains a tiny registry at `%LOCALAPPDATA%\colab-mcp\registry.json` (Windows) or `~/.colab-mcp/registry.json` (macOS/Linux). Each running instance writes `{pid, port, host, profile, started_at, command}` on startup and removes its own entry on clean shutdown. The MCP token is never stored. Stale/PID-reused entries are pruned automatically on startup. A normal server start never kills another Claude Code or Codex process.
+
+## Claude Code ↔ Codex handoff
+
+Each stdio MCP configuration normally starts its own process, with its own local
+port and token. That is safe as long as only one browser tab is actively
+connected to a given notebook at a time, but separate stdio processes cannot
+guarantee reuse of one browser tab because the Colab token belongs to the
+process. For same-tab handoff, use the shared Streamable HTTP daemon above.
+Do not use `--replace` or `--kill-stale` in an automatically launched MCP
+command: those are explicit maintenance actions.
+
+For a handoff while preserving the Colab notebook/runtime:
+
+1. In the current client, call `get_colab_connection_info` if you need the
+   notebook URL/connection coordinates, and make sure the notebook is saved at
+   its normal Colab URL (the scratch `empty.ipynb` is not a durable handoff
+   target).
+2. End the current Claude Code/Codex MCP session. This closes only that local
+   bridge; it does not request a runtime shutdown from Colab.
+3. For a same-tab handoff, keep the shared daemon running and switch the
+   client to the same HTTP `/mcp` URL. The new client reuses the daemon's
+   existing Colab connection; do not call `open_colab_browser_connection`
+   again. If the tab needs a fresh endpoint, call the open tool once with
+   `open_new_tab=false` and paste the returned complete URL into that same
+   tab's address bar.
+4. Call `get_cells` to verify that cells and outputs are present. Because both
+   clients use the same daemon process, a still-retained background
+   `execution_id` may also be reused with `get_code_execution` or
+   `list_code_executions`. If a long cell was in flight, treat its continuation
+   as unverified until the returned cell state/output confirms what happened.
+
+When using separate stdio processes instead, passing the same `notebook_url`
+preserves the notebook target but gives the new process a different token and
+port. It cannot promise the old tab will switch endpoints. Use the complete
+URL from `get_colab_connection_info` in the existing tab's address bar (or
+start one new tab) and verify with `get_cells`. In this separate-process case,
+the old `execution_id` is not available in the new local registry; the shared
+daemon is the supported same-tab and execution-ID-sharing path.
+
+If the browser does not connect automatically, call
+`get_colab_connection_info` in the new client. It returns `token`, `port`, and
+the complete URL separately. Paste the complete URL into the browser address
+bar to open/reload the notebook. Colab's connection dialog and command-palette
+wording varies by frontend version, so the individual values are provided for
+manual entry when the current UI exposes separate fields; this project does
+not assume an undocumented token/port encoding. The token-bearing URL is
+never logged or written to the process registry.
+
+Example profile-separated configuration (profile separation is a safety guard,
+not a shared daemon):
+
+```json
+{
+  "mcpServers": {
+    "colab-claude": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/colab-mcp", "colab-mcp", "--profile", "claude"]
+    },
+    "colab-codex": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/colab-mcp", "colab-mcp", "--profile", "codex"]
+    }
+  }
+}
+```
+
+The two processes can be listed together from a regular shell with
+`colab-mcp --list-running --profile claude` and
+`colab-mcp --list-running --profile codex`. A process is stopped only after
+its command line and start time still match the recorded PID, so PID reuse or
+an unrelated process cannot be signalled accidentally.
 
 ## Troubleshooting
 
 ### Tools don't appear after setup
 - Make sure you're using this fork, not the official repo
-- Only define `colab-proxy-mcp` in ONE `.mcp.json` file (not both global and project — dual definitions spawn two server instances and one dies silently)
+- Do not define the same `colab-proxy-mcp` entry twice for one client (for example, in both its global and project config). Claude and Codex may each have one explicitly profile-separated entry.
 - Restart your editor after changing `.mcp.json`
 
 ### `change_runtime` returns "Runtime API not initialized"
@@ -212,10 +383,15 @@ Make sure you have a Colab notebook open in the browser tab that opened. Click "
 
 Chrome dedupes tabs by URL canonical (ignoring the `#fragment`), so when an old Colab tab is still open with a fragment pointing at a previous server's port, calling `open_colab_browser_connection` again may silently focus the old tab instead of opening a fresh one. The old tab shows "Disconnected from the local Colab MCP server" and the new server times out.
 
-This fork mitigates that by appending the current port as a query param (`?p=<port>`) to the Colab URL, so each server instance produces a unique URL that Chrome can't dedupe. If you still hit it after upgrading:
+This fork keeps the current port as a query param (`?p=<port>`) for the
+initial URL. In shared-daemon mode, only the first client opens that URL;
+later clients reuse the daemon's already-connected tab. If you use separate
+stdio processes and still hit the stale-tab case after upgrading:
 
 1. Close every `colab.research.google.com` tab in your browser.
-2. Retry `open_colab_browser_connection` — it will open a fresh tab pointed at the live server.
+2. Retry `open_colab_browser_connection` in the new stdio process — it will
+   open one fresh initial tab pointed at the live server. For a same-tab
+   handoff, keep one Streamable HTTP daemon alive instead.
 
 ### Chrome silently blocks every connection attempt after one previous "Block"
 
@@ -265,13 +441,17 @@ This fork ships with built-in diagnostics. Run any of these from a **regular she
 # Show every colab-mcp server currently registered as running
 uv run --directory /path/to/colab-mcp colab-mcp --list-running
 
-# Terminate orphaned colab-mcp servers, then exit
-uv run --directory /path/to/colab-mcp colab-mcp --kill-stale
+# Explicitly terminate verified servers in the selected profile, then exit
+uv run --directory /path/to/colab-mcp colab-mcp --kill-stale --profile default
 ```
 
-The server writes a small registry file at `%LOCALAPPDATA%\colab-mcp\registry.json` (Windows) or `~/.colab-mcp/registry.json` (macOS/Linux) listing pid + port for each running instance. On every startup it prunes dead entries automatically, and on clean shutdown it removes its own. If `open_colab_browser_connection` times out from inside Claude Code, the new error message also includes the ports + pids of any peer servers so you can identify which one your browser tab is actually pointed at.
+The server writes a small registry file at `%LOCALAPPDATA%\colab-mcp\registry.json` (Windows) or `~/.colab-mcp/registry.json` (macOS/Linux) listing pid + port for each running instance. On every startup it prunes dead/PID-reused entries automatically, and on clean shutdown it removes its own. The diagnostic list also scans for unregistered server processes. If `open_colab_browser_connection` times out, the error includes the ports + pids of peer servers in the same profile so you can identify which endpoint your browser tab is using.
 
-After cleaning up, re-run `open_colab_browser_connection` — it will open a fresh Colab tab pointed at the current (only) server's port + token.
+After cleaning up, re-run `open_colab_browser_connection` from the new stdio
+process — it will open one initial Colab tab pointed at the current server's
+port + token. If another profile owns a live process, it is intentionally left
+alone. A shared Streamable HTTP daemon avoids this replacement flow and keeps
+one tab across Claude/Codex handoff.
 
 Fixes [upstream issue #84](https://github.com/googlecolab/colab-mcp/discussions/84).
 
@@ -300,6 +480,10 @@ This fork is based on [`googlecolab/colab-mcp`](https://github.com/googlecolab/c
 - **`e66ee69`** Match real Colab API signatures (language param, cellId, run_code_cell)
 - **stale-server detection** Process registry + `--list-running` / `--kill-stale` flags + clearer timeout diagnostics — fixes [upstream #84](https://github.com/googlecolab/colab-mcp/discussions/84) "Disconnected from the local Colab MCP server"
 - **full 7-tool notebook surface** — pre-register `get_cells`, `delete_cell`, `move_cell` (previously missing) and rename `execute_cell` → `run_code_cell` to match the browser-side handler. Closes [upstream #69](https://github.com/googlecolab/colab-mcp/discussions/69).
+- **notebook handoff** — `open_colab_browser_connection(notebook_url)` preserves existing notebook query parameters, replaces stale MCP fragment credentials, and adds non-secret cache-busting values; `get_colab_connection_info` exposes separate token/port fields without persisting them.
+- **long-cell polling** — `start_code_cell` starts the existing browser-side `run_code_cell` call in a bounded local background registry; `get_code_execution` and `list_code_executions` expose status/result while `run_code_cell` remains synchronous for compatibility.
+- **safe process lifecycle** — process-table discovery covers unregistered instances, validates start time and command line before signaling, and scopes explicit `--replace`/`--kill-stale`/`--stop-pid` actions by profile. Normal startup never kills a peer.
+- **shared daemon transport** — an explicit FastMCP Streamable HTTP mode lets Claude Code and Codex use one long-lived MCP process, one Colab WebSocket, and one browser tab; stdio remains the default.
 
 Google [does not accept external contributions](https://github.com/googlecolab/colab-mcp/blob/main/CONTRIBUTING.md) to the official repo, so these fixes live here.
 

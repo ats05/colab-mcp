@@ -20,14 +20,13 @@ import logging
 from fastmcp import FastMCP, Client
 from fastmcp.client.transports import ClientTransport
 from fastmcp.server.middleware import Middleware, MiddlewareContext
-from fastmcp.server.middleware.tool_injection import ToolInjectionMiddleware
-from fastmcp.server.proxy import FastMCPProxy
 from fastmcp.tools.tool import Tool, ToolResult
 from mcp.client.session import ClientSession
 from mcp.types import TextContent
 import webbrowser
 
-from colab_mcp.websocket_server import ColabWebSocketServer, COLAB, SCRATCH_PATH
+from colab_mcp.connection import build_connection_info
+from colab_mcp.websocket_server import ColabWebSocketServer
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +37,7 @@ TOOLS_READY_POLL_INTERVAL = 0.5  # secs
 INJECTED_TOOL_NAME = "open_colab_browser_connection"
 
 NOT_CONNECTED_MSG = (
-    "Not connected to a Google Colab browser session. "
+    "COLAB_NOT_CONNECTED: Not connected to a Google Colab browser session. "
     "Please call open_colab_browser_connection first to establish a connection, "
     "then retry this tool."
 )
@@ -217,17 +216,19 @@ def _make_injected_tools(
     calls to stub tool names and delegates to the proxy when connected).
     """
 
-    async def check_session_proxy_tool_fn() -> bool:
+    async def check_session_proxy_tool_fn(notebook_url: str = "") -> bool:
         if proxy_client.is_connected():
             return True
-        # Query param `?p=<port>` forces a unique URL per server instance so
-        # Chrome opens a fresh tab instead of silently reusing a stale tab
-        # left over from a prior session (whose fragment points at a dead
-        # port). The fragment is still the source of truth for Colab's
-        # browser-side code.
-        webbrowser.open_new(
-            f"{COLAB}{SCRATCH_PATH}?p={proxy_client.wss.port}#mcpProxyToken={proxy_client.wss.token}&mcpProxyPort={proxy_client.wss.port}"
+        # Keep this legacy injected tool in sync with the direct FastMCP tool.
+        # The actual MCP server pre-registers the tools in __init__.py; this
+        # helper is retained for clients/tests that use the session proxy
+        # directly.
+        info = build_connection_info(
+            notebook_url,
+            token=proxy_client.wss.token,
+            port=proxy_client.wss.port,
         )
+        webbrowser.open_new(info.url)
         return False
 
     async def add_code_cell_stub(code: str = "", cellIndex: int = 0, language: str = "python") -> str:

@@ -14,6 +14,7 @@
 
 import asyncio
 import contextlib
+import gc
 from colab_mcp.websocket_server import ColabWebSocketServer
 from mcp.types import JSONRPCRequest, JSONRPCResponse, JSONRPCMessage
 from mcp.shared.message import SessionMessage
@@ -40,6 +41,40 @@ async def test_successful_connection(origin_domain):
 
         assert not server.connection_live.is_set()
         assert not server.connection_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_socket_task_exceptions():
+    """Closing the server must not leave a BrokenResourceError task behind."""
+    loop = asyncio.get_running_loop()
+    unhandled = []
+    previous_handler = loop.get_exception_handler()
+
+    def capture_exception(loop, context):
+        unhandled.append(context)
+
+    loop.set_exception_handler(capture_exception)
+    try:
+        async with ColabWebSocketServer() as server:
+            client = await websockets.connect(
+                f"ws://localhost:{server.port}",
+                origin="https://colab.google.com",
+                subprotocols=["mcp"],
+                additional_headers={"Authorization": f"Bearer {server.token}"},
+            )
+            # Leave the client open. Server shutdown closes the stream while
+            # the read task is unwinding, which used to produce an unretrieved
+            # anyio.BrokenResourceError warning.
+        await client.wait_closed()
+        await asyncio.sleep(0)
+        gc.collect()
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert not any(
+        "Task exception was never retrieved" in context.get("message", "")
+        for context in unhandled
+    )
 
 
 @pytest.mark.asyncio

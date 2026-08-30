@@ -16,8 +16,8 @@ succeeded or timed out, and exits.
 import asyncio
 import sys
 
-from colab_mcp.session import ColabProxyClient
-from colab_mcp.websocket_server import ColabWebSocketServer, COLAB, SCRATCH_PATH
+from colab_mcp.websocket_server import ColabWebSocketServer
+from colab_mcp.connection import build_connection_info
 
 
 WAIT_SECONDS = 300
@@ -25,11 +25,12 @@ WAIT_SECONDS = 300
 
 async def main():
     async with ColabWebSocketServer() as wss:
-        url = (
-            f"{COLAB}{SCRATCH_PATH}"
-            f"?p={wss.port}"
-            f"#mcpProxyToken={wss.token}&mcpProxyPort={wss.port}"
+        connection = build_connection_info(
+            None,
+            token=wss.token,
+            port=wss.port,
         )
+        url = connection.url
         print("=" * 78)
         print("Server is running on:")
         print(f"  ws://127.0.0.1:{wss.port}")
