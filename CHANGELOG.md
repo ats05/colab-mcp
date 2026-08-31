@@ -11,6 +11,8 @@ commit history.
 ## 2026-08-31 — private mirror and handoff documentation
 
 ### Docs
+- Reorganize the README around general Colab MCP usage before optional
+  multi-agent/shared-daemon handoff, with aligned English and Japanese guides.
 - Clarify that `ats05/colab-mcp` is a private standalone mirror whose current
   `main` branch contains the handoff build; upstream synchronization is manual
   because the GitHub fork relationship is detached.
