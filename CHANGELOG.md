@@ -1,10 +1,24 @@
 # Changelog
 
-All notable changes to this fork of [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp) are documented here.
+All notable changes to this private standalone mirror of
+[`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp) are documented
+here.
 
-This fork follows the upstream `1.0.x` baseline and tags fork-specific work
-with the date of the change. Upstream-merged work keeps its own commit
-history.
+This repository follows the upstream `1.0.x` baseline and tags repository-
+specific work with the date of the change. Upstream-merged work keeps its own
+commit history.
+
+## 2026-08-31 — private mirror and handoff documentation
+
+### Docs
+- Clarify that `ats05/colab-mcp` is a private standalone mirror whose current
+  `main` branch contains the handoff build; upstream synchronization is manual
+  because the GitHub fork relationship is detached.
+- Add authenticated clone/`uvx` instructions and exact Claude Code/Codex
+  Streamable HTTP registration examples.
+- Make the shared daemon the recommended handoff path, including same-tab
+  connection with `open_new_tab=false` and `execution_id` polling across both
+  clients.
 
 ## 2026-08-30 — notebook handoff, safe process lifecycle, and background cells
 

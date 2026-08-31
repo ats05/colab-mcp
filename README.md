@@ -1,34 +1,42 @@
-# Colab MCP (Enhanced Fork)
+# Colab MCP (Private Enhanced Mirror)
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
 [![Stars](https://img.shields.io/github/stars/ats05/colab-mcp?style=social)](https://github.com/ats05/colab-mcp)
 
-An MCP server for controlling Google Colab from any AI coding agent. This fork fixes the bugs in the [official repo](https://github.com/googlecolab/colab-mcp) that block real day-to-day use and restores features Google removed upstream.
+An MCP server for controlling Google Colab from any AI coding agent. This private
+mirror fixes bugs in the [official repo](https://github.com/googlecolab/colab-mcp)
+that block real day-to-day use and restores features Google removed upstream.
 
-## Why This Fork?
+> **Private mirror / upstream note:** This repository is the private standalone
+> `ats05/colab-mcp` mirror, based on
+> [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp). It is a
+> standalone repository rather than a linked GitHub fork, so fork pull-request
+> relationships and automatic fork sync do not apply. The current `main`
+> branch contains the handoff build; sync upstream manually when intentionally
+> updating the mirror. Use the authenticated clone or `uvx` commands below.
 
-Three concrete dolores that the official `googlecolab/colab-mcp` doesn't solve — and that this fork does:
+## Why This Mirror?
 
-1. **Invisible tools** ([#54](https://github.com/googlecolab/colab-mcp/discussions/54), [#67](https://github.com/googlecolab/colab-mcp/discussions/67), [#69](https://github.com/googlecolab/colab-mcp/discussions/69)) — the upstream server only advertises `open_colab_browser_connection` until a browser connects. This fork registers the complete surface up front, so Claude Code and Codex can discover and call notebook tools without relying on `notifications/tools/list_changed`.
+Three concrete pain points that the official `googlecolab/colab-mcp` doesn't solve — and that this mirror does:
+
+1. **Invisible tools** ([#54](https://github.com/googlecolab/colab-mcp/discussions/54), [#67](https://github.com/googlecolab/colab-mcp/discussions/67), [#69](https://github.com/googlecolab/colab-mcp/discussions/69)) — the upstream server only advertises `open_colab_browser_connection` until a browser connects. This mirror registers the complete surface up front, so Claude Code and Codex can discover and call notebook tools without relying on `notifications/tools/list_changed`.
 2. **"Disconnected from the local Colab MCP server"** ([#84](https://github.com/googlecolab/colab-mcp/discussions/84)) — orphaned servers from prior Claude Code sessions hold ports that your browser tab still points at. Reconnecting from the tab silently fails.
 3. **No programmatic GPU control** — Google [removed](https://github.com/googlecolab/colab-mcp/discussions/41) the `--enable-runtime` feature entirely. You can't assign T4 / L4 / A100 without clicking in the browser.
 
-This fork fixes all three. All tools are registered at process startup (the
+This mirror fixes all three. All tools are registered at process startup (the
 client does not need `notifications/tools/list_changed`), stale servers are
 diagnosed from both the registry and the OS process table, and GPUs are
 assignable from a single tool call.
 
-> _Demo coming soon: `docs/demo.gif` (TODO — short asciinema of `change_runtime` → `add_code_cell` → `run_code_cell`)._
-
 ## What's Different
 
-| Feature | Official | This Fork |
+| Feature | Official | This Mirror |
 |---------|----------|-----------|
 | Notebook tools visible at startup | No (needs browser + list_changed) | Yes (pre-registered, works with Claude Code and Codex) |
 | `change_runtime` tool (GPU control) | Removed | Working via OAuth |
-| OAuth token caching | N/A | Yes (authorize once, cached forever) |
+| OAuth token caching | N/A | Yes (cached locally and refreshed as needed) |
 | Windows compatibility | Port 53919 blocked | Fixed (port 8085) |
 | ColabClient initialization | N/A | Fixed (Prod() env argument) |
 | Stale-server detection / cleanup | None — silent "Disconnected" | Registry + OS process scan, PID/start-time/command validation, profile-scoped explicit actions |
@@ -57,6 +65,11 @@ assignable from a single tool call.
 
 If you just want the notebook tools (no `change_runtime`):
 
+> **Recommended for Claude Code ↔ Codex handoff:** use the [shared Streamable
+> HTTP daemon](#one-shared-daemon-for-claude-code-and-codex) below. It keeps one
+> process, one Colab WebSocket/browser tab, and one execution registry. The
+> stdio setup shown here is a compatible fallback for one isolated client.
+
 ### 1. Install uv
 
 ```bash
@@ -69,11 +82,26 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 **Important:** Do NOT use `pip install uv` — that version lacks required features.
 
-### 2. Clone this repo
+### 2. Clone this private mirror
+
+Authenticate to GitHub before cloning. For HTTPS, configure GitHub CLI first:
 
 ```bash
+gh auth login && gh auth setup-git
 git clone https://github.com/ats05/colab-mcp.git
+cd colab-mcp
 ```
+
+SSH is also supported when an SSH key/agent is configured:
+
+```bash
+git clone git@github.com:ats05/colab-mcp.git
+cd colab-mcp
+```
+
+Do not put a personal access token in a clone URL, shell history, MCP config,
+or the repository. The mirror's `main` branch contains this documented build;
+upstream synchronization is a deliberate, manual operation.
 
 ### 3. Configure your MCP client
 
@@ -90,6 +118,9 @@ Add to your `.mcp.json` (Claude Code, Cursor, etc.):
   }
 }
 ```
+
+This stdio configuration is the compatible fallback for a single client. For
+Claude Code ↔ Codex handoff, use the shared-daemon setup below instead.
 
 ### 4. Use it
 
@@ -118,17 +149,15 @@ get_code_execution(execution_id="<returned id>")
 list_code_executions()
 ```
 
-`start_code_cell` returns immediately with `status: "running"`. The local
-registry retains bounded status/result history and expires terminal records;
-there is intentionally no cancel tool because cancelling a local task cannot
-guarantee that code already submitted to Colab stops. The returned
-`execution_id` belongs only to this MCP process; it is not portable to the
-other MCP process. A process handoff may leave an already accepted Colab
-cell running, but the browser/MCP bridge cannot guarantee remote continuation
-or completion after disconnect. Reconnect to the same `notebook_url` and use
-`get_cells` as the source of truth for the notebook's execution/output state.
-Durable progress tracking (for example, a cell heartbeat written to external
-storage) is intentionally outside this local registry's scope.
+`start_code_cell` returns immediately with `status: "running"`; poll with
+`get_code_execution` until the status is `completed` or `failed`. The local
+registry retains bounded status/result history and expires terminal records.
+The returned `execution_id` belongs to the MCP process: both clients inherit
+the ID when they use one shared daemon, but separate stdio processes cannot
+reuse it. A process handoff may leave an already accepted Colab cell running,
+but the browser/MCP bridge cannot guarantee remote continuation or completion
+after disconnect. Reconnect to the same `notebook_url` and use `get_cells` as
+the source of truth for the notebook's execution/output state.
 
 ### One shared daemon for Claude Code and Codex
 
@@ -145,22 +174,45 @@ uv run --directory /path/to/colab-mcp colab-mcp \
   --transport streamable-http --host 127.0.0.1 --port 8765
 ```
 
-Claude Code (`.mcp.json`):
+Without a local clone, `uvx` can fetch the current `main` branch directly. The Git URL still
+requires private-repository authentication through your SSH agent or a
+configured Git credential helper:
+
+```bash
+uvx --from "git+ssh://git@github.com/ats05/colab-mcp.git" \
+  colab-mcp --transport streamable-http --host 127.0.0.1 --port 8765
+```
+
+Claude Code CLI:
+
+```bash
+claude mcp add --transport http --scope user colab-shared \
+  http://127.0.0.1:8765/mcp
+```
+
+Codex CLI:
+
+```bash
+codex mcp add colab-shared --url http://127.0.0.1:8765/mcp
+```
+
+Equivalent Claude Code `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "colab-shared": {
+      "type": "http",
       "url": "http://127.0.0.1:8765/mcp"
     }
   }
 }
 ```
 
-Codex (`config.toml`):
+Equivalent Codex `config.toml`:
 
 ```toml
-[mcp_servers.colab_shared]
+[mcp_servers."colab-shared"]
 url = "http://127.0.0.1:8765/mcp"
 ```
 
@@ -217,6 +269,10 @@ You need a Google Cloud project with OAuth configured. This is a one-time setup 
 
 ### 2. Configure MCP with OAuth
 
+The following is the optional stdio configuration. For the recommended shared
+daemon, keep both clients pointed at the HTTP URL from Quick Start and add
+`--client-oauth-config /path/to/colab-oauth.json` to the daemon command instead.
+
 ```json
 {
   "mcpServers": {
@@ -260,7 +316,8 @@ Agent: get_cells()
 
 ## CLI Reference
 
-Once installed (via `uv run` or `uvx git+https://github.com/ats05/colab-mcp`), the `colab-mcp` command supports these flags:
+Once installed from the private mirror clone (`uv run`) or with the private Git
+source form (`uvx --from "git+ssh://git@github.com/ats05/colab-mcp.git"`), the `colab-mcp` command supports these flags:
 
 | Flag | Description |
 |------|-------------|
@@ -355,8 +412,8 @@ an unrelated process cannot be signalled accidentally.
 ## Troubleshooting
 
 ### Tools don't appear after setup
-- Make sure you're using this fork, not the official repo
-- Do not define the same `colab-proxy-mcp` entry twice for one client (for example, in both its global and project config). Claude and Codex may each have one explicitly profile-separated entry.
+- Make sure you're using this private mirror, not the official repo
+- Do not define the same MCP endpoint twice for one client (for example, in both its global and project config). Claude and Codex may each have one shared-daemon entry.
 - Restart your editor after changing `.mcp.json`
 
 ### `change_runtime` returns "Runtime API not initialized"
@@ -371,7 +428,7 @@ an unrelated process cannot be signalled accidentally.
 - If you see `WARNING:Failed to initialize Colab API client`, check the error message
 
 ### Windows: Port blocked error (WinError 10013)
-Already fixed in this fork (changed to port 8085). If you still hit it, edit `src/colab_mcp/auth.py` and change `OAUTH_SERVER_PORT` to any open port.
+Already fixed in this mirror (changed to port 8085). If you still hit it, edit `src/colab_mcp/auth.py` and change `OAUTH_SERVER_PORT` to any open port.
 
 ### OAuth says "Access denied"
 Add your Google email as a test user in Cloud Console > OAuth consent screen > Test users.
@@ -383,7 +440,7 @@ Make sure you have a Colab notebook open in the browser tab that opened. Click "
 
 Chrome dedupes tabs by URL canonical (ignoring the `#fragment`), so when an old Colab tab is still open with a fragment pointing at a previous server's port, calling `open_colab_browser_connection` again may silently focus the old tab instead of opening a fresh one. The old tab shows "Disconnected from the local Colab MCP server" and the new server times out.
 
-This fork keeps the current port as a query param (`?p=<port>`) for the
+This mirror keeps the current port as a query param (`?p=<port>`) for the
 initial URL. In shared-daemon mode, only the first client opens that URL;
 later clients reuse the daemon's already-connected tab. If you use separate
 stdio processes and still hit the stale-tab case after upgrading:
@@ -425,17 +482,17 @@ Chrome remembers the choice per-site, so you only need to allow it once for `col
 
 ### "Disconnected from the local Colab MCP server" — IPv4/IPv6 dual-stack bind (root cause)
 
-If you saw this message on the official `googlecolab/colab-mcp` and assumed it was an orphaned-server issue, the **actual root cause** is different — and is fixed in this fork.
+If you saw this message on the official `googlecolab/colab-mcp` and assumed it was an orphaned-server issue, the **actual root cause** is different — and is fixed in this mirror.
 
 With `host="localhost"` + `port=0`, the `websockets` library binds **two sockets on different ephemeral ports** (one for IPv6 `::1` and one for IPv4 `127.0.0.1`), then reports only one of them as the "server port". The Colab tab opens `ws://localhost:<reported-port>`, Chrome resolves `localhost` to either address family, and connects to a port with **no listener** in 50% of cases. The TCP connection drops with `stream ends after 0 bytes` server-side, the Colab tab shows "Disconnected from the local Colab MCP server" instantly, and the user waits 60s for a generic timeout.
 
-This fork forces IPv4-only (`host="127.0.0.1"`) so there is exactly one socket on exactly one port, and asserts this invariant at startup (raising `RuntimeError` if a future change re-introduces the dual-bind). See [`websocket_server.py`](src/colab_mcp/websocket_server.py) and the tests `test_single_socket_single_port` / `test_default_host_is_ipv4`.
+This mirror forces IPv4-only (`host="127.0.0.1"`) so there is exactly one socket on exactly one port, and asserts this invariant at startup (raising `RuntimeError` if a future change re-introduces the dual-bind). See [`websocket_server.py`](src/colab_mcp/websocket_server.py) and the tests `test_single_socket_single_port` / `test_default_host_is_ipv4`.
 
 ### Orphaned colab-mcp processes (separate issue)
 
 If a Colab tab in your browser shows **"Disconnected from the local Colab MCP server"** and re-clicking *Connect* doesn't help, the cause is almost always one or more **orphaned colab-mcp processes** from previous Claude Code sessions. Each instance picks a random ephemeral port, but your Colab tab only remembers the port from the URL fragment used when it first opened — when that server dies (or you spawn a new Claude Code session with a new server on a different port), the tab keeps trying to reach a dead address.
 
-This fork ships with built-in diagnostics. Run any of these from a **regular shell** (not from inside Claude Code, which is itself running an MCP instance):
+This mirror ships with built-in diagnostics. Run any of these from a **regular shell** (not from inside Claude Code, which is itself running an MCP instance):
 
 ```bash
 # Show every colab-mcp server currently registered as running
@@ -472,7 +529,7 @@ Supported platforms:
 
 ## Changes from Upstream
 
-This fork is based on [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp) with these changes:
+This private mirror is based on [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp) with these changes:
 
 - **`f70c00d`** Register notebook tools directly on the FastMCP server at startup (fixes invisible tools)
 - **`cae498b`** Add `change_runtime` tool with OAuth for programmatic GPU assignment
@@ -489,8 +546,8 @@ Google [does not accept external contributions](https://github.com/googlecolab/c
 
 ## Verified fixes (accepted in upstream discussions)
 
-- **[#67 → answered](https://github.com/googlecolab/colab-mcp/discussions/67)** — invisible-tools fix (this fork's pre-registration approach was accepted by the upstream community as the working solution).
-- **[#69](https://github.com/googlecolab/colab-mcp/discussions/69)** — follow-up on `get_cells` and the remaining missing stubs — addressed in this fork on 2026-06-16.
+- **[#67 → answered](https://github.com/googlecolab/colab-mcp/discussions/67)** — invisible-tools fix (this mirror's pre-registration approach was accepted by the upstream community as the working solution).
+- **[#69](https://github.com/googlecolab/colab-mcp/discussions/69)** — follow-up on `get_cells` and the remaining missing stubs — addressed in this mirror on 2026-06-16.
 - **[#84](https://github.com/googlecolab/colab-mcp/discussions/84)** — "Disconnected from the local Colab MCP server" — addressed via the stale-server registry + `--kill-stale` CLI.
 
 ---
@@ -501,4 +558,4 @@ Apache 2.0 (same as upstream)
 
 ---
 
-⭐ **If this fork saved you time, a star helps others find it.**
+⭐ **If this mirror saved you time, a star helps others find it.**
