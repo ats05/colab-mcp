@@ -19,6 +19,8 @@ commit history.
 - Make the shared daemon the recommended handoff path, including same-tab
   connection with `open_new_tab=false` and `execution_id` polling across both
   clients.
+- Add a concise Japanese guide for private cloning, shared-daemon setup,
+  same-tab handoff, and long-cell polling.
 
 ## 2026-08-30 — notebook handoff, safe process lifecycle, and background cells
 

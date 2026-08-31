@@ -17,6 +17,87 @@ that block real day-to-day use and restores features Google removed upstream.
 > branch contains the handoff build; sync upstream manually when intentionally
 > updating the mirror. Use the authenticated clone or `uvx` commands below.
 
+## 日本語ガイド
+
+指定した既存のGoogle Colabノートを、Claude CodeとCodexから同じブラウザタブで操作するための手順です。`uv`をインストールし、GitHubのprivate repositoryを取得できる状態にしてから実行してください。
+
+### private mirrorを取得
+
+HTTPSで取得する場合は、先にGitHub CLIで認証とcredential helperの設定を行います。個人アクセストークンをURLやシェル履歴に直接書かないでください。
+
+```bash
+gh auth login && gh auth setup-git
+git clone https://github.com/ats05/colab-mcp.git
+cd colab-mcp
+```
+
+SSHキーを設定済みなら、次でも取得できます。
+
+```bash
+git clone git@github.com:ats05/colab-mcp.git
+cd colab-mcp
+```
+
+### 共有daemonを起動してClaude Code / Codexを登録
+
+通常のターミナルでdaemonを1つだけ起動し、クライアントを切り替える間も終了させないでください。`/path/to/colab-mcp`はclone先に置き換えます。
+
+```bash
+uv run --directory /path/to/colab-mcp colab-mcp \
+  --transport streamable-http --host 127.0.0.1 --port 8765
+```
+
+cloneせずに実行する場合は、private repositoryを読めるSSH agentまたはGit credential helperを設定したうえで、次を使えます。
+
+```bash
+uvx --from "git+ssh://git@github.com/ats05/colab-mcp.git" \
+  colab-mcp --transport streamable-http --host 127.0.0.1 --port 8765
+```
+
+それぞれのCLIで、同じdaemonのHTTP endpointを登録します。
+
+```bash
+claude mcp add --transport http --scope user colab-shared \
+  http://127.0.0.1:8765/mcp
+```
+
+```bash
+codex mcp add colab-shared --url http://127.0.0.1:8765/mcp
+```
+
+この構成では、1つのdaemon、1つのColab WebSocket、1つのブラウザ接続を両クライアントで共有します。HTTP endpointは例のとおり`127.0.0.1`に限定し、LANや公開インターフェースへ認証なしで公開しないでください。
+
+### 指定済みColabノートを同じタブに接続
+
+すでに開いている対象ノートのタブを使う場合、最初のクライアントで一度だけ次を呼びます。
+
+```text
+open_colab_browser_connection(
+  notebook_url="https://colab.research.google.com/drive/<id>",
+  open_new_tab=false
+)
+```
+
+返された完全な接続URLには認証情報が含まれるため、対象の既存Colabタブのアドレスバーへ貼り付けて開きます。2つ目のクライアントでは`open_colab_browser_connection`を呼び直さず、同じ`http://127.0.0.1:8765/mcp` endpoint経由で`get_cells`などを呼んで接続とセル状態を確認します。`open_new_tab=false`を使うことで、新しいタブを作らずに指定済みノートへ接続できます。
+
+### 長時間セルの実行と引き継ぎ
+
+学習などの長いセルは、開始と結果確認を分けます。
+
+```text
+start_code_cell(cellId="train-cell")
+get_code_execution(execution_id="<returned id>")
+list_code_executions()
+```
+
+`start_code_cell`が返す`execution_id`を、`get_code_execution`で`completed`または`failed`になるまでpollします。`execution_id`はMCPプロセスに属するため、上記の共有daemonを両クライアントが使う場合は引き継いで利用できます。別々のstdioプロセスでは共有できません。引き継ぎ後のノートブックの実行結果は、`get_cells`で確認したセル状態・出力を正としてください。
+
+### stdio利用時とtoken URLの注意
+
+stdioは単独クライアント向けの互換構成です。Claude CodeとCodexがそれぞれstdioプロセスを起動すると、プロセスごとにtokenとportが異なるため、同じ`notebook_url`を指定しても同じタブの再利用や古い`execution_id`の利用は保証されません。同じタブと実行状態を共有する場合は、上記のStreamable HTTP daemonを使ってください。
+
+完全な接続URLはtoken-bearing URLなので、ログ、コミット、MCP設定、シェル履歴、チャットなどへ保存・共有しないでください。tokenはdaemonのメモリ内だけで管理されます。daemonを再起動するとtokenとローカルWebSocketのportが変わり、接続中のタブをそのまま維持できる保証はありません。その場合はdaemonを起動し直した後、`open_colab_browser_connection(..., open_new_tab=false)`が返す新しいURLを同じタブへ貼り付け、`get_cells`で状態を確認してください。
+
 ## Why This Mirror?
 
 Three concrete pain points that the official `googlecolab/colab-mcp` doesn't solve — and that this mirror does:
