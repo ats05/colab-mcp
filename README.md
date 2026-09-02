@@ -24,10 +24,10 @@ tab, so an agent can inspect and edit cells and run code in the notebook.
 
 - 任意の既存HTTPS Colab URL、またはデフォルトのscratch notebookに接続
 - コード／Markdownセルの管理と、コードセルの実行
-- 長時間セル向けのバックグラウンド実行開始・状態取得・一覧表示
+- コード実行は標準でバックグラウンド開始し、状態取得・一覧表示に対応
 - OAuthを設定した場合のT4、L4、A100、NONEランタイムの割り当て
 
-現在のMCPツールは13個です。接続（`open_colab_browser_connection`、`get_colab_connection_info`）、セル操作7個、長時間実行3個、ランタイム変更（`change_runtime`）で構成されます。セル操作では`add_code_cell`または`get_cells`で得た`cellId`を使います。
+現在のMCPツールは13個です。接続2個、セル操作8個、バックグラウンド実行の状態確認2個、ランタイム変更1個で構成されます。セル操作では`add_code_cell`または`get_cells`で得た`cellId`を使います。標準の`run_code_cell`はすぐに`execution_id`を返し、従来どおり完了まで待つ必要がある場合だけ`run_code_cell_blocking`を使います。
 
 ### 公式版との比較・このミラーの改善
 
@@ -37,7 +37,7 @@ tab, so an agent can inspect and edit cells and run code in the notebook.
 - 既存ノートのURL指定、古い接続情報を除いたURL生成、`open_new_tab=false`による既存タブ利用を追加
 - registryとOSプロセス表を照合し、PID・起動時刻・コマンド・profileを検証したうえで、明示的な診断／停止だけを行う
 - IPv4固定（`127.0.0.1`）とChromeのPrivate Network Access（PNA）用ヘッダーで、ローカルWebSocket接続の失敗要因を修正
-- 長時間セル用の`start_code_cell`、`get_code_execution`、`list_code_executions`を追加
+- `run_code_cell`を非同期実行の標準にし、`get_code_execution`と`list_code_executions`で進捗を確認可能にした（従来の完了待ちは`run_code_cell_blocking`）
 - OAuthによるGPUランタイム変更と、複数クライアントで任意に共有できるStreamable HTTP daemonを追加
 - OAuthトークンをローカルにキャッシュして更新し、WindowsのOAuthコールバックポートを`8085`に変更、Colab API初期化の不足引数も修正
 
@@ -74,7 +74,10 @@ open_colab_browser_connection(
 get_cells()
 add_code_cell(code="print('hello')")
 run_code_cell(cellId="<cellId>")
+get_code_execution(execution_id="<returned id>")
 ```
+
+`run_code_cell`は`status: "running"`と`execution_id`をすぐ返します。同じツール応答で最終出力まで待ちたい短いセルには、互換用の`run_code_cell_blocking(cellId="<cellId>")`を使います。
 
 ### 複数エージェントからの共有操作（任意）
 
@@ -138,18 +141,20 @@ even before a browser has connected; notebook calls return an explicit
 | `add_code_cell` | Yes | | Add a code cell |
 | `add_text_cell` | Yes | | Add a Markdown cell |
 | `get_cells` | Yes | | Read cells, IDs, contents, and outputs |
-| `run_code_cell` | Yes | | Execute a cell by `cellId` |
+| `run_code_cell` | Yes | | Start a cell in the background and return an `execution_id` |
+| `run_code_cell_blocking` | Yes | | Execute a cell and wait for its final result |
 | `update_cell` | Yes | | Edit a cell by `cellId` |
 | `delete_cell` | Yes | | Delete a cell by `cellId` |
 | `move_cell` | Yes | | Move a cell by `cellId` |
-| `start_code_cell` | Yes | | Start a cell in the background and return an `execution_id` |
 | `get_code_execution` | | | Poll a background execution's status/result |
 | `list_code_executions` | | | List retained background executions |
 | `change_runtime` | | Yes | Assign a `T4`, `L4`, `A100`, or `NONE` runtime |
 
 > **Note:** `execute_cell` was renamed to `run_code_cell` in 2026-06-16 to
 > match the browser-side handler. Pass a `cellId` from `add_code_cell` or
-> `get_cells`; the old `cellIndex` fallback was removed.
+> `get_cells`; the old `cellIndex` fallback was removed. Since 2026-09-02,
+> `run_code_cell` is the non-blocking default. The previous wait-for-result
+> behavior is available as `run_code_cell_blocking`.
 
 ## Improvements over the official `googlecolab/colab-mcp`
 
@@ -162,7 +167,7 @@ optional capabilities:
 | Existing notebooks and tabs | Connection flow primarily opens a new URL/tab | Accepts an existing HTTPS `notebook_url`; `open_new_tab=false` prepares a URL for an existing tab |
 | Process lifecycle | A stale process can leave a tab pointed at a dead port | Registry + OS process scan; PID, start time, command, and profile are checked before explicit stop/cleanup |
 | Local browser connection | `localhost` dual-stack binding and missing PNA response headers can make Chrome fail to reach the server | IPv4-only `127.0.0.1` binding plus PNA/CORS headers on preflight and WebSocket upgrade |
-| Long-running cells | No local background execution API | `start_code_cell`, `get_code_execution`, and `list_code_executions` with bounded, process-local tracking |
+| Long-running cells | A cell call occupies the client until completion | `run_code_cell` returns an execution ID immediately; `get_code_execution` and `list_code_executions` provide bounded, process-local tracking; `run_code_cell_blocking` preserves opt-in waiting |
 | Runtime/GPU control | The upstream runtime flag/API is not available in the baseline | Optional OAuth-backed `change_runtime` for T4, L4, A100, or NONE |
 | OAuth token handling | Not provided by the upstream baseline | Cached locally and refreshed as needed |
 | Windows OAuth callback | The default callback port can be blocked | Uses port `8085` |
@@ -250,15 +255,15 @@ token and port when a new browser connection is required, so an old cached
 token/port pair is not reused. A shared daemon opens only one initial tab;
 subsequent MCP clients reuse that daemon connection.
 
-For training or other long cells, use the asynchronous tools:
+Code execution is asynchronous by default, including for training and other long cells:
 
 ```text
-start_code_cell(cellId="train-cell")
+run_code_cell(cellId="train-cell")
 get_code_execution(execution_id="<returned id>")
 list_code_executions()
 ```
 
-`start_code_cell` returns immediately with `status: "running"`; poll with
+`run_code_cell` returns immediately with `status: "running"`; poll with
 `get_code_execution` until the status is `completed` or `failed`. The local
 registry retains bounded status/result history and expires terminal records.
 The returned `execution_id` belongs to the MCP process: both clients inherit
@@ -267,6 +272,10 @@ reuse it. A process handoff may leave an already accepted Colab cell running,
 but the browser/MCP bridge cannot guarantee remote continuation or completion
 after disconnect. Reconnect to the same `notebook_url` and use `get_cells` as
 the source of truth for the notebook's execution/output state.
+
+For a short cell whose final output must be returned by the same MCP tool call,
+use `run_code_cell_blocking(cellId="<cellId>")`. It deliberately occupies that
+tool call until the browser-side execution finishes.
 
 ## Optional/Advanced: Multiple agents and a shared daemon
 
@@ -419,7 +428,10 @@ Agent: add_code_cell(code="!nvidia-smi")
 > {"cellId": "abc123", ...}
 
 Agent: run_code_cell(cellId="abc123")
-> Tesla T4, 15GB memory...
+> {"execution_id": "...", "cell_id": "abc123", "status": "running"}
+
+Agent: get_code_execution(execution_id="...")
+> {"status": "completed", "result": "Tesla T4, 15GB memory..."}
 
 Agent: get_cells()
 > [{"cellId": "abc123", "code": "!nvidia-smi", "outputs": [...]}]
@@ -603,7 +615,7 @@ This private mirror is based on [`googlecolab/colab-mcp`](https://github.com/goo
 - **stale-server detection** Process registry + `--list-running` / `--kill-stale` flags + clearer timeout diagnostics — fixes [upstream #84](https://github.com/googlecolab/colab-mcp/discussions/84) "Disconnected from the local Colab MCP server"
 - **full 7-tool notebook surface** — pre-register `get_cells`, `delete_cell`, `move_cell` (previously missing) and rename `execute_cell` → `run_code_cell` to match the browser-side handler. Closes [upstream #69](https://github.com/googlecolab/colab-mcp/discussions/69).
 - **notebook handoff** — `open_colab_browser_connection(notebook_url)` preserves existing notebook query parameters, replaces stale MCP fragment credentials, and adds non-secret cache-busting values; `get_colab_connection_info` exposes separate token/port fields without persisting them.
-- **long-cell polling** — `start_code_cell` starts the existing browser-side `run_code_cell` call in a bounded local background registry; `get_code_execution` and `list_code_executions` expose status/result while `run_code_cell` remains synchronous for compatibility.
+- **non-blocking execution by default** — public `run_code_cell` starts the existing browser-side `run_code_cell` handler in a bounded local background registry and returns an `execution_id`; `get_code_execution` and `list_code_executions` expose status/result, while `run_code_cell_blocking` preserves the previous synchronous behavior explicitly.
 - **safe process lifecycle** — process-table discovery covers unregistered instances, validates start time and command line before signaling, and scopes explicit `--replace`/`--kill-stale`/`--stop-pid` actions by profile. Normal startup never kills a peer.
 - **shared daemon transport** — an explicit FastMCP Streamable HTTP mode lets Claude Code and Codex use one long-lived MCP process, one Colab WebSocket, and one browser tab; stdio remains the default.
 

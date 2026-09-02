@@ -8,6 +8,27 @@ This repository follows the upstream `1.0.x` baseline and tags repository-
 specific work with the date of the change. Upstream-merged work keeps its own
 commit history.
 
+## Unreleased — non-blocking code execution by default
+
+### Changed (breaking)
+- `run_code_cell(cellId)` now starts the browser-side execution in the local
+  background registry and immediately returns `execution_id`, `cell_id`,
+  `status`, and `started_at`. Poll `get_code_execution(execution_id)` for a
+  terminal `completed` or `failed` status.
+- The former wait-for-result behavior moved to
+  `run_code_cell_blocking(cellId)`. Its internal browser handler remains named
+  `run_code_cell`; only the public MCP contract changed.
+- The transitional public `start_code_cell` tool was removed. The surface
+  remains 13 tools because `run_code_cell_blocking` replaces it.
+
+### Migration
+- Replace `start_code_cell(cellId)` with `run_code_cell(cellId)`.
+- Existing callers that consumed the final output directly from
+  `run_code_cell` must either poll `get_code_execution` or explicitly switch
+  to `run_code_cell_blocking`.
+- Historical entries below retain the names and behavior that existed at the
+  time of those releases.
+
 ## 2026-08-31 — private mirror and handoff documentation
 
 ### Docs

@@ -262,18 +262,13 @@ async def get_cells() -> str:
 
 
 @mcp.tool()
-async def run_code_cell(cellId: str = "") -> str:
-    """Execute a code cell in the Colab notebook by cellId (from add_code_cell or get_cells). Requires an active browser connection via open_colab_browser_connection."""
-    return await _forward_or_stub("run_code_cell", {"cellId": cellId})
-
-
-@mcp.tool()
-async def start_code_cell(cellId: str = "") -> dict[str, object]:
+async def run_code_cell(cellId: str = "") -> dict[str, object]:
     """Start a code cell in the background and return an execution ID.
 
-    This is for long-running work such as training. The local task tracks the
-    browser-side call, but its execution_id is local to this MCP process and
-    cannot be resumed by a different Claude Code/Codex process. Disconnecting
+    This is the default execution path, so the MCP client remains available
+    while any cell runs. The local task tracks the browser-side call, but its
+    execution_id is local to this MCP process and cannot be resumed by a
+    different Claude Code/Codex process. Disconnecting
     the process may or may not leave code already submitted to Colab running;
     this bridge cannot guarantee remote continuation or completion. Use
     get_cells after a handoff to inspect the notebook's actual state/output.
@@ -305,8 +300,20 @@ async def start_code_cell(cellId: str = "") -> dict[str, object]:
 
 
 @mcp.tool()
+async def run_code_cell_blocking(cellId: str = "") -> str:
+    """Execute a code cell and wait for its final browser-side result.
+
+    Prefer run_code_cell for long-running work so the MCP client remains
+    available while the cell executes. This blocking variant preserves the
+    previous behavior for short cells and callers that need the result in the
+    same tool response.
+    """
+    return await _forward_or_stub("run_code_cell", {"cellId": cellId})
+
+
+@mcp.tool()
 async def get_code_execution(execution_id: str) -> dict[str, object]:
-    """Get the status/result of a start_code_cell execution."""
+    """Get the status/result of a background run_code_cell execution."""
     return _execution_registry.get(execution_id)
 
 

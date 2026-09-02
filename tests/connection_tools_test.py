@@ -117,22 +117,48 @@ async def test_invalid_connection_url_does_not_open_browser(proxy_client):
 
 
 @pytest.mark.asyncio
-async def test_start_code_cell_returns_immediately_and_can_be_polled(proxy_client, monkeypatch):
+async def test_run_code_cell_returns_immediately_and_can_be_polled(proxy_client, monkeypatch):
     import colab_mcp
     from colab_mcp.execution import CodeExecutionRegistry
 
     registry = CodeExecutionRegistry(max_entries=4, ttl_seconds=60)
     monkeypatch.setattr(colab_mcp, "_execution_registry", registry)
+    release_execution = asyncio.Event()
+
+    async def wait_for_release(*_args, **_kwargs):
+        await release_execution.wait()
+        return "finished"
+
     with patch.object(colab_mcp, "_proxy_client", proxy_client), patch.object(
-        colab_mcp, "_forward_or_stub", new=AsyncMock(return_value="finished")
+        colab_mcp, "_forward_or_stub", new=AsyncMock(side_effect=wait_for_release)
     ):
         proxy_client.is_connected.return_value = True
-        started = await colab_mcp.start_code_cell.fn("cell-1")
+        started = await colab_mcp.run_code_cell.fn("cell-1")
         assert started["execution_id"]
         assert started["status"] == "running"
+        await asyncio.sleep(0)
+        assert (
+            await colab_mcp.get_code_execution.fn(started["execution_id"])
+        )["status"] == "running"
+        release_execution.set()
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert (
             await colab_mcp.get_code_execution.fn(started["execution_id"])
         )["status"] == "completed"
     await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_run_code_cell_blocking_uses_browser_handler():
+    import colab_mcp
+
+    with patch.object(
+        colab_mcp,
+        "_forward_or_stub",
+        new=AsyncMock(return_value="finished"),
+    ) as forward:
+        result = await colab_mcp.run_code_cell_blocking.fn("cell-1")
+
+    assert result == "finished"
+    forward.assert_awaited_once_with("run_code_cell", {"cellId": "cell-1"})

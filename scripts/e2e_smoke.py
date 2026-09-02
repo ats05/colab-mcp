@@ -16,11 +16,13 @@ The disconnected smoke verifies:
 
 The connected smoke (with --connect) additionally drives:
   - open_colab_browser_connection
-  - add_code_cell -> run_code_cell -> get_cells -> update_cell -> delete_cell -> move_cell
+  - add_code_cell -> run_code_cell -> get_code_execution -> get_cells
+    -> update_cell -> delete_cell -> move_cell
 """
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -42,7 +44,7 @@ EXPECTED_TOOLS = {
     "move_cell",
     "change_runtime",
     "get_colab_connection_info",
-    "start_code_cell",
+    "run_code_cell_blocking",
     "get_code_execution",
     "list_code_executions",
 }
@@ -51,7 +53,7 @@ NOTEBOOK_STUBS = {
     "add_code_cell",
     "add_text_cell",
     "get_cells",
-    "run_code_cell",
+    "run_code_cell_blocking",
     "update_cell",
     "delete_cell",
     "move_cell",
@@ -74,6 +76,27 @@ def _result_has_payload(result) -> bool:
     if _result_text(result):
         return True
     return getattr(result, "structured_content", None) is not None
+
+
+def _result_dict(result) -> dict:
+    """Extract a dict returned by a FastMCP tool across client versions."""
+    structured = getattr(result, "structured_content", None)
+    if isinstance(structured, dict):
+        if isinstance(structured.get("result"), dict):
+            return structured["result"]
+        return structured
+    for block in result.content:
+        if not hasattr(block, "text"):
+            continue
+        try:
+            parsed = json.loads(block.text)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("result"), dict):
+                return parsed["result"]
+            return parsed
+    return {}
 
 
 async def smoke_disconnected(client: Client) -> int:
@@ -102,8 +125,14 @@ async def smoke_disconnected(client: Client) -> int:
     else:
         print(_green("  OK — execute_cell correctly removed"))
 
-    print("\n[3/5] Inspecting schemas of the 4 newly-added/renamed tools...")
-    target_tools = {"get_cells", "run_code_cell", "delete_cell", "move_cell"}
+    print("\n[3/5] Inspecting schemas of execution and cell tools...")
+    target_tools = {
+        "get_cells",
+        "run_code_cell",
+        "run_code_cell_blocking",
+        "delete_cell",
+        "move_cell",
+    }
     for tool in tools:
         if tool.name not in target_tools:
             continue
@@ -117,7 +146,7 @@ async def smoke_disconnected(client: Client) -> int:
         ("add_code_cell", {"code": "print('hi')"}),
         ("add_text_cell", {"content": "hello"}),
         ("get_cells", {}),
-        ("run_code_cell", {"cellId": "fake"}),
+        ("run_code_cell_blocking", {"cellId": "fake"}),
         ("update_cell", {"cellId": "fake", "content": "x"}),
         ("delete_cell", {"cellId": "fake"}),
         ("move_cell", {"cellId": "fake", "cellIndex": 0}),
@@ -132,12 +161,14 @@ async def smoke_disconnected(client: Client) -> int:
             failures += 1
 
     print("\n[5/5] Checking background execution and connection-info tools while disconnected...")
-    background = await client.call_tool("start_code_cell", {"cellId": "fake"})
+    background = await client.call_tool("run_code_cell", {"cellId": "fake"})
     background_text = _result_text(background)
-    if "COLAB_NOT_CONNECTED" in background_text:
-        print(_green("  OK — start_code_cell returned COLAB_NOT_CONNECTED"))
+    background_error = str(_result_dict(background).get("error", ""))
+    if "COLAB_NOT_CONNECTED" in background_text or "COLAB_NOT_CONNECTED" in background_error:
+        print(_green("  OK — run_code_cell returned COLAB_NOT_CONNECTED"))
     else:
-        print(_red(f"  FAIL — start_code_cell returned unexpected: {background_text[:120]}"))
+        diagnostic = background_text or background_error
+        print(_red(f"  FAIL — run_code_cell returned unexpected: {diagnostic[:120]}"))
         failures += 1
 
     info = await client.call_tool("get_colab_connection_info", {})
@@ -179,8 +210,6 @@ async def smoke_connected(client: Client) -> int:
         print(_red(f"  FAIL — connection not established. Reply: {text}"))
         return failures + 1
 
-    import json
-
     def _text(result):
         return "\n".join(c.text for c in result.content if hasattr(c, "text"))
 
@@ -213,13 +242,28 @@ async def smoke_connected(client: Client) -> int:
 
     print(f"\n[4/7] run_code_cell(cellId={cell_id!r})...")
     result = await client.call_tool("run_code_cell", {"cellId": cell_id})
-    rc_text = _text(result)
-    print(f"    -> {rc_text[:300]}")
-    if "Error" in rc_text or "Not connected" in rc_text:
-        print(_red("    FAIL — run_code_cell returned error"))
+    started = _result_dict(result)
+    execution_id = started.get("execution_id")
+    print(f"    -> {started}")
+    if not execution_id or started.get("status") != "running":
+        print(_red("    FAIL — run_code_cell did not start a background execution"))
         failures += 1
     else:
-        print(_green("    OK — run_code_cell executed"))
+        finished = started
+        for _ in range(120):
+            await asyncio.sleep(0.25)
+            polled = await client.call_tool(
+                "get_code_execution", {"execution_id": execution_id}
+            )
+            finished = _result_dict(polled)
+            if finished.get("status") in {"completed", "failed"}:
+                break
+        if finished.get("status") == "completed":
+            print(_green("    OK — run_code_cell completed through polling"))
+            print(f"    result -> {str(finished.get('result', ''))[:300]}")
+        else:
+            print(_red(f"    FAIL — background execution ended as: {finished}"))
+            failures += 1
 
     print(f"\n[5/7] update_cell(cellId={cell_id!r}, content='# updated by E2E')...")
     result = await client.call_tool("update_cell", {"cellId": cell_id, "content": "# updated by E2E"})
