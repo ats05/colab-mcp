@@ -1,3 +1,6 @@
+# Copyright 2026 Atsushi Onozawa.
+# Licensed under the Apache License, Version 2.0.
+
 from urllib.parse import parse_qs, parse_qsl, urlparse
 
 import pytest

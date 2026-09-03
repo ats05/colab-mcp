@@ -1,3 +1,4 @@
+# Modified by Sebastian Gil Pinzon and Atsushi Onozawa, 2026. Generated from pyproject.toml.
 version = 1
 revision = 3
 requires-python = ">=3.13"
@@ -201,7 +202,7 @@ wheels = [
 
 [[package]]
 name = "colab-mcp"
-version = "1.1.0"
+version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },

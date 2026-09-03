@@ -1,4 +1,5 @@
 # Copyright 2026 Google Inc.
+# Modified by Sebastian Gil Pinzon and Atsushi Onozawa, 2026.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +16,7 @@
 import argparse
 import asyncio
 import datetime
+import ipaddress
 import logging
 import os
 import tempfile
@@ -455,7 +457,16 @@ def parse_args(v):
     parser.add_argument(
         "--host",
         default="127.0.0.1",
-        help="HTTP transport bind address (keep 127.0.0.1 unless access is secured).",
+        help="HTTP transport bind address (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--allow-insecure-non-loopback",
+        action="store_true",
+        default=False,
+        help=(
+            "Explicitly allow an unauthenticated HTTP transport to bind outside "
+            "loopback. This can expose notebook tools and bearer credentials."
+        ),
     )
     parser.add_argument(
         "--port",
@@ -470,7 +481,29 @@ def parse_args(v):
         metavar="PATH",
         help="HTTP transport endpoint path (FastMCP default /mcp when omitted).",
     )
-    return parser.parse_args(v)
+    args = parser.parse_args(v)
+    if (
+        args.transport != "stdio"
+        and not _is_loopback_host(args.host)
+        and not args.allow_insecure_non_loopback
+    ):
+        parser.error(
+            "non-loopback HTTP binding is unauthenticated and disabled by default; "
+            "use --host 127.0.0.1 or explicitly acknowledge the risk with "
+            "--allow-insecure-non-loopback"
+        )
+    return args
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return whether an HTTP bind host is unambiguously loopback-only."""
+    normalized = host.strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def _print_running_servers() -> None:

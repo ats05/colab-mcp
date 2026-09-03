@@ -1,4 +1,8 @@
-"""Manual browser test — print the Colab URL and wait for the user to connect.
+# Copyright 2026 Sebastian Gil Pinzon.
+# Modified by Atsushi Onozawa, 2026.
+# Licensed under the Apache License, Version 2.0.
+
+"""Manual browser test — open the Colab URL and wait for a connection.
 
 Used to diagnose browser-specific connection bugs (e.g., Chrome blocking
 localhost WebSockets while Edge / Firefox / brave do not).
@@ -6,15 +10,15 @@ localhost WebSockets while Edge / Firefox / brave do not).
 Usage:
     uv run python scripts/manual_browser_test.py
 
-The script starts the colab-mcp WebSocket server (same code as the real
-MCP server), prints the URL once, and then waits up to 5 minutes for any
-browser to connect. Paste the URL into Edge, Firefox, Brave, Chrome —
-whichever you want to test. The script reports whether the connection
-succeeded or timed out, and exits.
+The script starts the colab-mcp WebSocket server (same code as the real MCP
+server), opens the connection URL in the default browser, and then waits up to
+5 minutes for a connection. The bearer token and token-bearing URL are never
+printed. The script reports whether the connection succeeded or timed out.
 """
 
 import asyncio
 import sys
+import webbrowser
 
 from colab_mcp.websocket_server import ColabWebSocketServer
 from colab_mcp.connection import build_connection_info
@@ -30,19 +34,16 @@ async def main():
             token=wss.token,
             port=wss.port,
         )
-        url = connection.url
         print("=" * 78)
         print("Server is running on:")
         print(f"  ws://127.0.0.1:{wss.port}")
-        print(f"  Token: {wss.token}")
-        print()
-        print("PASTE THIS URL INTO THE BROWSER YOU WANT TO TEST:")
-        print()
-        print(url)
+        print("Opening a token-bearing connection URL in the default browser.")
+        print("The credential is intentionally not printed to stdout.")
         print()
         print(f"Waiting up to {WAIT_SECONDS}s for a browser to connect...")
         print("=" * 78)
         sys.stdout.flush()
+        webbrowser.open_new(connection.url)
 
         try:
             await asyncio.wait_for(wss.connection_live.wait(), timeout=WAIT_SECONDS)

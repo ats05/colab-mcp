@@ -1,2 +1,26 @@
+# Modified by Sebastian Gil Pinzon and Atsushi Onozawa, 2026.
+
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.log
+colab-mcp-logs*/
+.colab-mcp-auth-token.json
+*client-secret*.json
+*client_secret*.json
+*.pem
+*.key
+*.p12
+*.pfx
 development-methodology/

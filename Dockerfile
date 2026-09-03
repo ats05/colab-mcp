@@ -1,4 +1,7 @@
 # syntax=docker/dockerfile:1.7
+# Copyright 2026 Sebastian Gil Pinzon.
+# Modified by Atsushi Onozawa, 2026.
+# Licensed under the Apache License, Version 2.0.
 #
 # Dockerfile for colab-mcp — MCP server for controlling Google Colab.
 #
@@ -23,7 +26,7 @@ RUN pip install --no-cache-dir uv==0.5.11
 WORKDIR /app
 
 # Copy lock files first for better layer caching, then install deps.
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE UPSTREAM.md ./
 COPY src ./src
 
 # Sync dependencies into a project-local .venv. --no-dev keeps the image

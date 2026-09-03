@@ -1,3 +1,7 @@
+# Copyright 2026 Sebastian Gil Pinzon.
+# Modified by Atsushi Onozawa, 2026.
+# Licensed under the Apache License, Version 2.0.
+
 """End-to-end smoke test for the colab-mcp server.
 
 Launches the real `colab-mcp` server as a subprocess, connects to it via stdio

@@ -1,3 +1,6 @@
+# Copyright 2026 Atsushi Onozawa.
+# Licensed under the Apache License, Version 2.0.
+
 import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, parse_qsl, urlparse

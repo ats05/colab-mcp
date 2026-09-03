@@ -1,11 +1,17 @@
+# Modified by Sebastian Gil Pinzon and Atsushi Onozawa, 2026. See NOTICE and UPSTREAM.md.
+
 [project]
 name = "colab-mcp"
-version = "1.1.0"
+version = "1.2.0"
 description = "An MCP server for Colab"
 readme = "README.md"
+license = "Apache-2.0"
 authors = [
     { name = "Tyler Pirtle", email = "rtp@google.com" },
     { name = "Josie Cuff", email = "josiecuff@google.com" },
+]
+maintainers = [
+    { name = "Atsushi Onozawa" },
 ]
 requires-python = ">=3.13"
 dependencies = [
@@ -19,6 +25,11 @@ dependencies = [
     "google-auth-oauthlib>=0.7.0",
     "jupyter-kernel-client>=0.9.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/ats05/colab-mcp"
+Issues = "https://github.com/ats05/colab-mcp/issues"
+Changelog = "https://github.com/ats05/colab-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 colab-mcp = "colab_mcp:main"

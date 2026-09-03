@@ -1,0 +1,15 @@
+Colab MCP community fork
+Portions copyright 2026 Google Inc.
+Portions copyright 2026 Sebastian Gil Pinzon.
+Portions copyright 2026 Atsushi Onozawa.
+
+This repository contains work from the official Google Colab MCP project,
+intermediate fork work by Sebastian Gil Pinzon, and later modifications by
+Atsushi Onozawa. File-level notices identify the applicable origin and later
+modifications where practical. See UPSTREAM.md for provenance details.
+
+This is an unofficial community-maintained project. It is not affiliated with,
+sponsored by, or endorsed by Google. Google Colab and Google are trademarks of
+Google LLC.
+
+The software is licensed under the Apache License, Version 2.0. See LICENSE.

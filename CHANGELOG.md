@@ -1,16 +1,33 @@
+<!-- Copyright 2026 Sebastian Gil Pinzon. Modified by Atsushi Onozawa, 2026. See NOTICE and UPSTREAM.md. -->
+
 # Changelog
 
-All notable changes to this private standalone mirror of
+All notable changes to this community-maintained standalone fork of
 [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp) are documented
 here.
 
-This repository follows the upstream `1.0.x` baseline and tags repository-
-specific work with the date of the change. Upstream-merged work keeps its own
-commit history.
+This repository retains its upstream commit ancestry and records fork-specific
+work here. Upstream-derived work keeps its original attribution and history.
 
-## Unreleased — non-blocking code execution by default
+## Unreleased — 1.2.0
+
+### Added
+- Public-repository governance, provenance, security, support, and release
+  documentation.
+- CI checks for lint, tests, and the disconnected MCP smoke test, plus
+  Dependabot configuration.
+
+### Security
+- OAuth token-cache updates are atomic and owner-only (`0600`) on POSIX;
+  permissions on existing cache files are corrected before reading.
+- The manual browser diagnostic no longer prints its bearer token or complete
+  token-bearing URL.
+- Unauthenticated HTTP transports reject non-loopback bind addresses unless
+  `--allow-insecure-non-loopback` explicitly acknowledges the exposure risk.
 
 ### Changed (breaking)
+- Prepare metadata and public documentation for version 1.2.0 while retaining
+  upstream attribution and marking this as an unofficial community fork.
 - `run_code_cell(cellId)` now starts the browser-side execution in the local
   background registry and immediately returns `execution_id`, `cell_id`,
   `status`, and `started_at`. Poll `get_code_execution(execution_id)` for a
@@ -29,20 +46,21 @@ commit history.
 - Historical entries below retain the names and behavior that existed at the
   time of those releases.
 
-## 2026-08-31 — private mirror and handoff documentation
+## 2026-08-31 — standalone mirror and handoff documentation
 
 ### Docs
 - Reorganize the README around general Colab MCP usage before optional
   multi-agent/shared-daemon handoff, with aligned English and Japanese guides.
-- Clarify that `ats05/colab-mcp` is a private standalone mirror whose current
+- Clarify that `ats05/colab-mcp` is a standalone mirror whose current
   `main` branch contains the handoff build; upstream synchronization is manual
   because the GitHub fork relationship is detached.
-- Add authenticated clone/`uvx` instructions and exact Claude Code/Codex
-  Streamable HTTP registration examples.
+- At the time this repository was private, add authenticated clone/`uvx`
+  instructions and exact Claude Code/Codex Streamable HTTP registration
+  examples.
 - Make the shared daemon the recommended handoff path, including same-tab
   connection with `open_new_tab=false` and `execution_id` polling across both
   clients.
-- Add a concise Japanese guide for private cloning, shared-daemon setup,
+- Add a concise Japanese guide for cloning, shared-daemon setup,
   same-tab handoff, and long-cell polling.
 
 ## 2026-08-30 — notebook handoff, safe process lifecycle, and background cells

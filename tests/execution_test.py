@@ -1,3 +1,6 @@
+# Copyright 2026 Atsushi Onozawa.
+# Licensed under the Apache License, Version 2.0.
+
 import asyncio
 
 import pytest
@@ -75,4 +78,3 @@ async def test_close_cleans_up_local_tasks_without_public_cancel():
     await registry.close()
     assert registry.list() == []
     assert registry.get(started["execution_id"])["status"] == "unknown"
-

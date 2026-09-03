@@ -1,3 +1,6 @@
+# Copyright 2026 Atsushi Onozawa.
+# Licensed under the Apache License, Version 2.0.
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -25,6 +28,7 @@ def test_shared_transport_arguments_are_explicit_and_local_by_default():
     assert args.host == "127.0.0.1"
     assert args.port == 8765
     assert args.path == "/mcp"
+    assert args.allow_insecure_non_loopback is False
 
 
 def test_stdio_remains_the_default_transport():
@@ -36,6 +40,41 @@ def test_stdio_remains_the_default_transport():
     assert args.host == "127.0.0.1"
     assert args.port is None
     assert args.path is None
+    assert args.allow_insecure_non_loopback is False
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "example.com"])
+def test_http_transport_rejects_non_loopback_host_without_explicit_ack(host):
+    from colab_mcp import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args(["--transport", "streamable-http", "--host", host])
+
+
+def test_http_transport_allows_non_loopback_host_with_explicit_ack():
+    from colab_mcp import parse_args
+
+    args = parse_args(
+        [
+            "--transport",
+            "streamable-http",
+            "--host",
+            "0.0.0.0",
+            "--allow-insecure-non-loopback",
+        ]
+    )
+
+    assert args.host == "0.0.0.0"
+    assert args.allow_insecure_non_loopback is True
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.2", "::1", "[::1]"])
+def test_http_transport_accepts_loopback_variants(host):
+    from colab_mcp import parse_args
+
+    args = parse_args(["--transport", "streamable-http", "--host", host])
+
+    assert args.host == host
 
 
 @pytest.mark.asyncio

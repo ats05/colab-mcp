@@ -1,3 +1,5 @@
+<!-- Modified by Sebastian Gil Pinzon and Atsushi Onozawa, 2026. See NOTICE and UPSTREAM.md. -->
+
 # Colab MCP
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -9,10 +11,10 @@ An MCP server for controlling Google Colab from AI coding agents. It connects
 an MCP client to a Google Colab notebook through a local server and a browser
 tab, so an agent can inspect and edit cells and run code in the notebook.
 
-> This is a private standalone mirror based on
-> [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp). GitHub
-> fork synchronization is not enabled; upstream updates are manual. See the
-> clone examples below for authenticated access.
+> **Unofficial community fork.** This standalone repository is based on
+> [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp) and is not
+> affiliated with, sponsored by, or endorsed by Google. GitHub fork
+> synchronization is not enabled; upstream updates are reviewed manually.
 
 ## 日本語ガイド
 
@@ -43,10 +45,9 @@ tab, so an agent can inspect and edit cells and run code in the notebook.
 
 ### 基本利用（単独クライアント）
 
-private mirrorを取得できる状態にしてから、`uv`とMCPクライアントを設定します。HTTPSでは次のようにGitHub CLIで認証します。個人アクセストークンをURLやシェル履歴に直接書かないでください。
+これはGoogle非公式のコミュニティforkです。通常の公開HTTPS cloneに認証は不要です。`uv`とMCPクライアントを用意して、次のように取得します。
 
 ```bash
-gh auth login && gh auth setup-git
 git clone https://github.com/ats05/colab-mcp.git
 cd colab-mcp
 ```
@@ -87,6 +88,11 @@ get_code_execution(execution_id="<returned id>")
 uv run --directory /path/to/colab-mcp colab-mcp \
   --transport streamable-http --host 127.0.0.1 --port 8765
 ```
+
+`127.0.0.1`のまま利用してください。HTTP transportには独自認証がないため、
+loopback外への公開はノート操作と接続用bearer tokenをネットワークへ露出します。
+`--allow-insecure-non-loopback`はこの危険を明示承認するためのflagであり、認証を
+追加するものではありません。
 
 各クライアントを同じendpointへ登録します。
 
@@ -196,17 +202,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 **Important:** Do NOT use `pip install uv` — that version lacks required features.
 
-### 2. Clone this private mirror
+### 2. Clone this community fork
 
-Authenticate to GitHub before cloning. For HTTPS, configure GitHub CLI first:
+The public HTTPS clone does not require GitHub authentication:
 
 ```bash
-gh auth login && gh auth setup-git
 git clone https://github.com/ats05/colab-mcp.git
 cd colab-mcp
 ```
 
-SSH is also supported when an SSH key/agent is configured:
+SSH is also available when an SSH key or agent is configured:
 
 ```bash
 git clone git@github.com:ats05/colab-mcp.git
@@ -214,7 +219,9 @@ cd colab-mcp
 ```
 
 Do not put a personal access token in a clone URL, shell history, MCP config,
-or the repository.
+or the repository. This community fork is not published to PyPI by its
+maintainer; install from this repository and verify the `ats05/colab-mcp`
+source before running it.
 
 ### 3. Configure your MCP client
 
@@ -292,12 +299,16 @@ uv run --directory /path/to/colab-mcp colab-mcp \
   --transport streamable-http --host 127.0.0.1 --port 8765
 ```
 
-Without a local clone, `uvx` can fetch the current `main` branch directly. The Git URL still
-requires private-repository authentication through your SSH agent or a
-configured Git credential helper:
+Keep the bind address on `127.0.0.1`. The HTTP transport has no independent
+authentication. A non-loopback bind can expose notebook tools and the Colab
+connection bearer token to the network. `--allow-insecure-non-loopback` only
+acknowledges that risk; it does not add authentication.
+
+Without a local clone, `uvx` can fetch the current `main` branch directly over
+public HTTPS:
 
 ```bash
-uvx --from "git+ssh://git@github.com/ats05/colab-mcp.git" \
+uvx --from "git+https://github.com/ats05/colab-mcp.git" \
   colab-mcp --transport streamable-http --host 127.0.0.1 --port 8765
 ```
 
@@ -441,8 +452,9 @@ Agent: get_cells()
 
 ## CLI Reference
 
-Once installed from the private mirror clone (`uv run`) or with the private Git
-source form (`uvx --from "git+ssh://git@github.com/ats05/colab-mcp.git"`), the `colab-mcp` command supports these flags:
+Once installed from a clone (`uv run`) or the public Git source
+(`uvx --from "git+https://github.com/ats05/colab-mcp.git"`), the `colab-mcp`
+command supports these flags:
 
 | Flag | Description |
 |------|-------------|
@@ -458,6 +470,7 @@ source form (`uvx --from "git+ssh://git@github.com/ats05/colab-mcp.git"`), the `
 | `--all-profiles` | Broaden an explicit `--stop-pid`/`--kill-stale` action; it has no effect on normal startup |
 | `--transport` | `stdio` by default; use `streamable-http` for one shared local daemon |
 | `--host` | HTTP bind address (default `127.0.0.1`; ignored for stdio) |
+| `--allow-insecure-non-loopback` | Explicitly allow an unauthenticated HTTP transport outside loopback; exposes notebook tools and bearer credentials to reachable clients |
 | `--port` | HTTP port (FastMCP default when omitted; ignored for stdio) |
 | `--path` | HTTP endpoint path (default `/mcp`; ignored for stdio) |
 
@@ -489,7 +502,7 @@ command line and start time still match the recorded PID.
 ## Troubleshooting
 
 ### Tools don't appear after setup
-- Make sure you're using this private mirror, not the official repo
+- Make sure you're using this community fork, not the official repo
 - Do not define the same MCP endpoint twice for one client (for example, in both its global and project config). Claude and Codex may each have one shared-daemon entry.
 - Restart your editor after changing `.mcp.json`
 
@@ -606,7 +619,7 @@ Supported platforms:
 
 ## Changes from Upstream
 
-This private mirror is based on [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp) with these changes:
+This community-maintained standalone fork is based on [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp) with these changes:
 
 - **`f70c00d`** Register notebook tools directly on the FastMCP server at startup (fixes invisible tools)
 - **`cae498b`** Add `change_runtime` tool with OAuth for programmatic GPU assignment
@@ -632,6 +645,15 @@ Google [does not accept external contributions](https://github.com/googlecolab/c
 ## License
 
 Apache 2.0 (same as upstream)
+
+See [NOTICE](NOTICE) and [UPSTREAM.md](UPSTREAM.md) for provenance and
+attribution. The Apache license does not grant trademark rights. Google Colab
+and Google are trademarks of Google LLC; this project is unofficial and is not
+endorsed by Google.
+
+Project policies: [Contributing](CONTRIBUTING.md),
+[Security](SECURITY.md), [Support](SUPPORT.md),
+[Code of Conduct](CODE_OF_CONDUCT.md), and [Release checklist](RELEASING.md).
 
 ---
 

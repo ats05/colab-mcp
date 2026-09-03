@@ -1,4 +1,6 @@
 # Copyright 2026 Google Inc.
+# Added to this fork by Sebastian Gil Pinzon, 2026.
+# Modified by Atsushi Onozawa, 2026.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
