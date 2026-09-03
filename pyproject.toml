@@ -49,7 +49,7 @@ dev = [
     "ruff>=0.14.3",
 ]
 commit = [
-    "pre-commit>=4.3.0",
+    "pre-commit>=4.6.2",
 ]
 
 # For local development with the jupyter-kernel-client, uncomment this
