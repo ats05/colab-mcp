@@ -16,7 +16,7 @@ maintainers = [
 requires-python = ">=3.13"
 dependencies = [
     "anyio>=4.14.2",
-    "fastmcp==2.14.5",
+    "fastmcp==3.4.7",
     "mcp[cli]>=1.20.0",
     "pydantic>=2.12.3,<3.0.0",
     "requests>=2.34.2",
@@ -41,7 +41,7 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "coverage>=7.13.1",
-    "fastmcp==2.14.5",
+    "fastmcp==3.4.7",
     "jupyter-kernel-client",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.2.0",
