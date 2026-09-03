@@ -43,7 +43,7 @@ dev = [
     "coverage>=7.13.1",
     "fastmcp==2.14.5",
     "jupyter-kernel-client",
-    "pytest>=8.4.2",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.0.0",
     "ruff>=0.14.3",
