@@ -17,6 +17,10 @@ work here. Upstream-derived work keeps its original attribution and history.
 - CI checks for lint, tests, and the disconnected MCP smoke test, plus
   Dependabot configuration.
 
+### Fixed
+- On Windows, PowerShell process-inspection helpers now use
+  `CREATE_NO_WINDOW` so they do not share the parent application's console.
+
 ### Security
 - OAuth token-cache updates are atomic and owner-only (`0600`) on POSIX;
   permissions on existing cache files are corrected before reading.

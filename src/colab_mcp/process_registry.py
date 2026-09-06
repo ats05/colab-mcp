@@ -44,6 +44,18 @@ logger = logging.getLogger(__name__)
 
 START_TIME_TOLERANCE_SECONDS = 10.0
 _DIAGNOSTIC_FLAGS = {"--list-running", "--kill-stale", "--stop-pid"}
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _windows_subprocess_kwargs() -> dict[str, int]:
+    """Keep Windows-only helper processes out of the parent console."""
+    if sys.platform != "win32":
+        return {}
+    return {
+        "creationflags": getattr(
+            subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW
+        )
+    }
 
 
 @dataclass(frozen=True)
@@ -294,6 +306,7 @@ def _windows_process_info(pid: int) -> ProcessInfo | None:
             text=True,
             check=False,
             timeout=3,
+            **_windows_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -321,6 +334,7 @@ def _iter_windows_process_info() -> Iterable[ProcessInfo]:
             text=True,
             check=False,
             timeout=5,
+            **_windows_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return
