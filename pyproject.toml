@@ -44,7 +44,7 @@ dev = [
     "fastmcp==2.14.7",
     "jupyter-kernel-client",
     "pytest>=9.1.1",
-    "pytest-asyncio>=1.2.0",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.0.0",
     "ruff>=0.14.3",
 ]
