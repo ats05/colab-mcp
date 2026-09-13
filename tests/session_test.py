@@ -70,6 +70,7 @@ class TestDirectTools:
             tool_names = {t.name for t in tools}
             assert tool_names == {
                 "open_colab_browser_connection",
+                "prepare_colab_browser_connection",
                 "add_code_cell",
                 "add_text_cell",
                 "get_cells",
@@ -88,10 +89,22 @@ class TestDirectTools:
     async def test_stub_returns_not_connected_when_no_proxy(self):
         from colab_mcp import mcp
         async with Client(mcp) as client:
-            result = await client.call_tool("add_code_cell", {"code": "print('hi')"})
+            result = await client.call_tool(
+                "add_code_cell", {"code": "print('hi')", "cellIndex": -1}
+            )
             assert any(
                 session.NOT_CONNECTED_MSG in c.text for c in result.content
             )
+
+    @pytest.mark.asyncio
+    async def test_cell_add_tools_require_explicit_index(self):
+        from colab_mcp import mcp
+
+        async with Client(mcp) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+
+        assert "cellIndex" in tools["add_code_cell"].inputSchema["required"]
+        assert "cellIndex" in tools["add_text_cell"].inputSchema["required"]
 
 
 class TestAwaitToolsReady:

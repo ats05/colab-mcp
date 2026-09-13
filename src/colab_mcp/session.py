@@ -232,16 +232,16 @@ def _make_injected_tools(
         webbrowser.open_new(info.url)
         return False
 
-    async def add_code_cell_stub(code: str = "", cellIndex: int = 0, language: str = "python") -> str:
+    async def add_code_cell_stub(cellIndex: int, code: str = "", language: str = "python") -> str:
         return NOT_CONNECTED_MSG
 
-    async def add_text_cell_stub(content: str = "", cellIndex: int = -1) -> str:
+    async def add_text_cell_stub(cellIndex: int, content: str = "") -> str:
         return NOT_CONNECTED_MSG
 
     async def get_cells_stub() -> str:
         return NOT_CONNECTED_MSG
 
-    async def run_code_cell_stub(cellId: str = "") -> str:
+    async def run_code_cell_stub(cellId: str = "", code: str = "") -> str:
         return NOT_CONNECTED_MSG
 
     async def update_cell_stub(cellId: str = "", content: str = "") -> str:
@@ -277,7 +277,7 @@ def _make_injected_tools(
         Tool.from_function(
             fn=run_code_cell_stub,
             name="run_code_cell",
-            description="Execute a code cell in the Colab notebook by cellId. Requires an active browser connection via open_colab_browser_connection.",
+            description="Execute code directly on an OAuth-connected Colab runtime, or execute a notebook cell by cellId through the optional browser bridge.",
         ),
         Tool.from_function(
             fn=update_cell_stub,

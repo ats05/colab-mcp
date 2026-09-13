@@ -16,16 +16,31 @@ work here. Upstream-derived work keeps its original attribution and history.
   documentation.
 - CI checks for lint, tests, and the disconnected MCP smoke test, plus
   Dependabot configuration.
+- Direct OAuth-backed Colab runtime execution through
+  `jupyter-kernel-client`, with bounded incremental output events.
+- Explicit `prepare_colab_browser_connection` tool for returning the single
+  `TOKEN&PORT` value expected by an already-open Colab tab without opening a
+  browser or waiting.
+- `add_code_cell` and `add_text_cell` now require an explicit `cellIndex`;
+  pass `-1` to append instead of relying on a placement default.
 
 ### Fixed
 - On Windows, PowerShell process-inspection helpers now use
   `CREATE_NO_WINDOW` so they do not share the parent application's console.
+- A client launch retry after a timed-out browser connection now marks the
+  failed server instance; the next startup removes only that failed peer in
+  the same profile and transport, preventing unbounded stdio process buildup
+  without terminating a live Claude Code, Codex, or shared daemon process.
+- `get_code_execution` now supports `cursor` and `wait_seconds` so background
+  direct-runtime output can be consumed incrementally instead of only after
+  completion.
 
 ### Security
 - OAuth token-cache updates are atomic and owner-only (`0600`) on POSIX;
   permissions on existing cache files are corrected before reading.
-- The manual browser diagnostic no longer prints its bearer token or complete
-  token-bearing URL.
+- The manual handoff path is explicit: `prepare_colab_browser_connection`
+  returns only the combined `TOKEN&PORT` credential needed by Colab's single
+  input field, while diagnostic coordinates remain in the read-only info tool.
 - Unauthenticated HTTP transports reject non-loopback bind addresses unless
   `--allow-insecure-non-loopback` explicitly acknowledges the exposure risk.
 
@@ -39,8 +54,12 @@ work here. Upstream-derived work keeps its original attribution and history.
 - The former wait-for-result behavior moved to
   `run_code_cell_blocking(cellId)`. Its internal browser handler remains named
   `run_code_cell`; only the public MCP contract changed.
-- The transitional public `start_code_cell` tool was removed. The surface
-  remains 13 tools because `run_code_cell_blocking` replaces it.
+- The transitional public `start_code_cell` tool was removed. The surface now
+  has 14 tools because `run_code_cell_blocking` replaces it and
+  `prepare_colab_browser_connection` makes manual tab handoff discoverable.
+- `run_code_cell(code=...)` and `run_code_cell_blocking(code=...)` use the
+  direct runtime when OAuth is configured; `cellId` continues to use the
+  optional browser notebook bridge.
 
 ### Migration
 - Replace `start_code_cell(cellId)` with `run_code_cell(cellId)`.

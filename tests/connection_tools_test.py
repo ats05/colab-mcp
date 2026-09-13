@@ -107,6 +107,37 @@ async def test_connection_info_contains_separate_token_port_and_url(proxy_client
 
 
 @pytest.mark.asyncio
+async def test_prepare_connection_returns_manual_credentials_without_opening_browser(
+    proxy_client, monkeypatch
+):
+    import colab_mcp
+
+    monkeypatch.setattr(colab_mcp, "_connection_attempt_url", None)
+    with patch.object(colab_mcp, "_proxy_client", proxy_client), patch(
+        "colab_mcp.webbrowser.open_new"
+    ) as open_new:
+        info = await colab_mcp.prepare_colab_browser_connection.fn()
+
+    assert info == "current-token&54321"
+    open_new.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prepare_connection_reuses_existing_manual_credentials(proxy_client, monkeypatch):
+    import colab_mcp
+
+    monkeypatch.setattr(
+        colab_mcp,
+        "_connection_attempt_url",
+        "",
+    )
+    with patch.object(colab_mcp, "_proxy_client", proxy_client):
+        info = await colab_mcp.prepare_colab_browser_connection.fn()
+
+    assert info == "current-token&54321"
+
+
+@pytest.mark.asyncio
 async def test_invalid_connection_url_does_not_open_browser(proxy_client):
     import colab_mcp
 
@@ -117,6 +148,31 @@ async def test_invalid_connection_url_does_not_open_browser(proxy_client):
 
     assert "Invalid notebook URL" in result
     open_new.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connection_timeout_marks_process_failed_for_next_restart(
+    proxy_client, monkeypatch
+):
+    import colab_mcp
+
+    monkeypatch.setattr(colab_mcp, "_connection_attempt_url", None)
+    mark_state = Mock()
+    with patch.object(colab_mcp, "_proxy_client", proxy_client), patch(
+        "colab_mcp.webbrowser.open_new"
+    ), patch.object(
+        colab_mcp.process_registry, "mark_state", mark_state
+    ), patch.object(
+        colab_mcp.process_registry, "list_running", return_value=[]
+    ):
+        result = await colab_mcp.open_colab_browser_connection.fn(
+            "https://colab.research.google.com/drive/notebook"
+        )
+
+    assert "Connection timed out" in result
+    mark_state.assert_called_once_with(
+        "connection_failed", pid=colab_mcp.os.getpid(), started_at=None, instance_id=None
+    )
 
 
 @pytest.mark.asyncio
@@ -149,6 +205,38 @@ async def test_run_code_cell_returns_immediately_and_can_be_polled(proxy_client,
         assert (
             await colab_mcp.get_code_execution.fn(started["execution_id"])
         )["status"] == "completed"
+    await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_run_code_cell_direct_runtime_streams_events(monkeypatch):
+    import colab_mcp
+    from colab_mcp.execution import CodeExecutionRegistry
+
+    registry = CodeExecutionRegistry(max_entries=4, ttl_seconds=60)
+    monkeypatch.setattr(colab_mcp, "_execution_registry", registry)
+
+    class FakeRuntime:
+        async def execute(self, code, publish):
+            assert code == "print('hello')"
+            publish({"output_type": "stream", "name": "stdout", "text": "hello\n"})
+            return [{"output_type": "stream", "name": "stdout", "text": "hello\n"}]
+
+    class FakeManager:
+        runtime = FakeRuntime()
+        connected = True
+
+    with patch.object(colab_mcp, "_proxy_client", None), patch.object(
+        colab_mcp, "_direct_runtime_manager", FakeManager()
+    ):
+        started = await colab_mcp.run_code_cell.fn(code="print('hello')")
+        await asyncio.sleep(0)
+        result = await colab_mcp.get_code_execution.fn(
+            started["execution_id"], cursor=0
+        )
+
+    assert result["events"][0]["text"] == "hello\n"
+    assert result["next_cursor"] == 1
     await registry.close()
 
 

@@ -77,6 +77,12 @@ class ServerEntry:
     # These fields are deliberately non-secret. The MCP token is never stored.
     command: str = ""
     instance_id: str = ""
+    # ``starting`` means that the process has not completed a browser
+    # connection yet.  A failed startup is recorded so the next client
+    # restart can remove only that failed peer, without killing a live Claude
+    # or Codex session.
+    state: str = "starting"
+    state_changed_at: float = 0.0
 
 
 def _registry_dir() -> Path:
@@ -105,6 +111,10 @@ def _parse_entry(raw: object) -> ServerEntry | None:
             profile=str(raw.get("profile") or "default"),
             command=str(raw.get("command") or ""),
             instance_id=str(raw.get("instance_id") or ""),
+            # Entries written before lifecycle state was introduced are
+            # intentionally not treated as failed; they may still be active.
+            state=str(raw.get("state") or "unknown"),
+            state_changed_at=float(raw.get("state_changed_at") or 0.0),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -456,6 +466,22 @@ def profile_from_command(command: str) -> str:
     return "default"
 
 
+def transport_from_command(command: str) -> str:
+    """Extract the MCP transport from a command line.
+
+    Older registry entries did not record a transport, so an omitted flag is
+    the stdio default.  This lets failed stdio restarts clean up only failed
+    stdio peers and leave a long-lived shared HTTP daemon alone.
+    """
+    tokens = _command_tokens(command)
+    for index, token in enumerate(tokens):
+        if token == "--transport" and index + 1 < len(tokens):
+            return tokens[index + 1].lower()
+        if token.startswith("--transport="):
+            return token.split("=", 1)[1].lower()
+    return "stdio"
+
+
 def _commands_match(expected: str, actual: str) -> bool:
     if not expected or not actual:
         return True
@@ -540,6 +566,79 @@ def prune_dead() -> int:
         _save_registry(alive)
         logger.info("Pruned %d invalid colab-mcp entries from registry", dead_count)
     return dead_count
+
+
+def mark_state(
+    state: str,
+    *,
+    pid: int | None = None,
+    started_at: float | None = None,
+    instance_id: str | None = None,
+) -> bool:
+    """Record a non-secret lifecycle state for this server instance."""
+    if state not in {"starting", "connected", "connection_failed"}:
+        raise ValueError(f"unsupported server state: {state}")
+    pid = os.getpid() if pid is None else pid
+    changed = False
+    now = time.time()
+
+    def update(entries: list[ServerEntry]) -> list[ServerEntry]:
+        nonlocal changed
+        for entry in entries:
+            if entry.pid != pid:
+                continue
+            if instance_id and entry.instance_id != instance_id:
+                continue
+            if (
+                started_at is not None
+                and abs(entry.started_at - started_at) > START_TIME_TOLERANCE_SECONDS
+            ):
+                continue
+            entry.state = state
+            entry.state_changed_at = now
+            changed = True
+            break
+        return entries
+
+    _update_registry(update)
+    return changed
+
+
+def cleanup_unhealthy(
+    *,
+    profile: str | None = "default",
+    transport: str = "stdio",
+) -> List[ServerEntry]:
+    """Terminate verified peers that explicitly failed to connect.
+
+    A failed browser connection is a recoverable startup condition, not a
+    reason to kill a live peer.  Only entries explicitly marked
+    ``connection_failed`` are candidates.  Legacy entries without a state
+    are left alone.  The transport filter prevents a stdio restart from
+    touching a shared Streamable HTTP daemon.
+    """
+    registry_entries = _load_registry()
+    removed: list[ServerEntry] = []
+    retained: list[ServerEntry] = []
+
+    for entry in registry_entries:
+        if not _entry_matches_profile(entry, profile):
+            retained.append(entry)
+            continue
+        info = _verified_info(entry)
+        if info is None:
+            removed.append(entry)
+            continue
+        if transport_from_command(info.command) != transport:
+            retained.append(entry)
+            continue
+        if entry.state == "connection_failed" and _terminate_verified(entry, info):
+            removed.append(entry)
+        else:
+            retained.append(entry)
+
+    _save_registry(retained)
+    return removed
 
 
 def _terminate_verified(
@@ -663,6 +762,8 @@ def register(port: int, host: str = "127.0.0.1", profile: str = "default") -> Se
         profile=profile or "default",
         command=command,
         instance_id=uuid.uuid4().hex,
+        state="starting",
+        state_changed_at=time.time(),
     )
 
     _update_registry(

@@ -7,9 +7,10 @@
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
 [![Stars](https://img.shields.io/github/stars/ats05/colab-mcp?style=social)](https://github.com/ats05/colab-mcp)
 
-An MCP server for controlling Google Colab from AI coding agents. It connects
-an MCP client to a Google Colab notebook through a local server and a browser
-tab, so an agent can inspect and edit cells and run code in the notebook.
+An MCP server for controlling Google Colab from AI coding agents. With OAuth
+configured it connects directly to the Colab Jupyter runtime, so code execution
+and output streaming do not require a browser tab. The browser bridge remains
+available for notebook UI operations and compatibility.
 
 > **Unofficial community fork.** This standalone repository is based on
 > [`googlecolab/colab-mcp`](https://github.com/googlecolab/colab-mcp) and is not
@@ -20,30 +21,37 @@ tab, so an agent can inspect and edit cells and run code in the notebook.
 
 ### これは何か
 
-`colab-mcp`は、Claude Code、Codex、CursorなどのAIコーディングエージェントからGoogle Colabを操作するためのMCPサーバーです。基本構成は、エージェント → ローカルのMCPサーバー（通常は`stdio`、共有時はStreamable HTTP）→ ブラウザのColabタブ → Colabのノートブック／ランタイム、という流れです。ノートブックの読み書きとコード実行には、Colabのブラウザ接続が必要です。GPUランタイムの変更だけは、任意のOAuth設定で利用できます。
+`colab-mcp`は、Claude Code、Codex、CursorなどのAIコーディングエージェントからGoogle Colabを操作するためのMCPサーバーです。複数クライアントでの利用やClaude CodeからCodexへの引き継ぎを想定し、通常は1つの共有Streamable HTTP daemonへ各クライアントを接続します。単独利用ではstdioも使えます（CLIの既定値は互換性のためstdioです）。OAuthを設定するとMCP自身がColab runtimeへ直接接続し、コード実行と出力ストリーミングにブラウザは不要です。ブラウザ接続はノートブックUIのセル操作と互換経路として任意で利用できます。
 
 ### 基本機能
 
 - 任意の既存HTTPS Colab URL、またはデフォルトのscratch notebookに接続
 - コード／Markdownセルの管理と、コードセルの実行
-- コード実行は標準でバックグラウンド開始し、状態取得・一覧表示に対応
+- コード実行は標準でバックグラウンド開始し、状態取得・一覧表示・逐次出力取得に対応
+- OAuthによる直接runtime接続（ブラウザ不要の`run_code_cell(code=...)`）
+- 既存のColabタブへ手動接続するための明示的な準備（ブラウザを開かずColab入力用の`TOKEN&PORT`を取得）
 - OAuthを設定した場合のT4、L4、A100、NONEランタイムの割り当て
 
-現在のMCPツールは13個です。接続2個、セル操作8個、バックグラウンド実行の状態確認2個、ランタイム変更1個で構成されます。セル操作では`add_code_cell`または`get_cells`で得た`cellId`を使います。標準の`run_code_cell`はすぐに`execution_id`を返し、従来どおり完了まで待つ必要がある場合だけ`run_code_cell_blocking`を使います。
+現在のMCPツールは14個です。接続3個、セル操作6個、実行・状態確認4個、ランタイム変更1個で構成されます。既存タブへ手動接続する場合は`prepare_colab_browser_connection`を呼び、返された`TOKEN&PORT`文字列をColabの「MCPプロキシトークン」欄へ入力します。このツールはブラウザを開かず、接続完了まで待ちません。セル追加の`cellIndex`は必須で、`-1`を指定すると末尾へ追加します。省略した場合は実行されません。セル操作では`add_code_cell`または`get_cells`で得た`cellId`を使います。標準の`run_code_cell`はすぐに`execution_id`を返し、従来どおり完了まで待つ必要がある場合だけ`run_code_cell_blocking`を使います。
 
 ### 公式版との比較・このミラーの改善
 
 公式の`googlecolab/colab-mcp`を基準に、このミラーでは次を改善・追加しています。
 
 - 接続前から全ツールを登録し、`notifications/tools/list_changed`に依存せずクライアントが発見できるようにした
-- 既存ノートのURL指定、古い接続情報を除いたURL生成、`open_new_tab=false`による既存タブ利用を追加
+- 既存ノートのURL指定、古い接続情報を除いたURL生成、`prepare_colab_browser_connection`による既存タブへの明示的な手動接続準備を追加
 - registryとOSプロセス表を照合し、PID・起動時刻・コマンド・profileを検証したうえで、明示的な診断／停止だけを行う
 - IPv4固定（`127.0.0.1`）とChromeのPrivate Network Access（PNA）用ヘッダーで、ローカルWebSocket接続の失敗要因を修正
-- `run_code_cell`を非同期実行の標準にし、`get_code_execution`と`list_code_executions`で進捗を確認可能にした（従来の完了待ちは`run_code_cell_blocking`）
-- OAuthによるGPUランタイム変更と、複数クライアントで任意に共有できるStreamable HTTP daemonを追加
+- `run_code_cell`を非同期実行の標準にし、`get_code_execution`の`cursor`／`wait_seconds`で直接runtimeの出力を逐次取得できるようにした（従来の完了待ちは`run_code_cell_blocking`）
+- OAuth設定時はブラウザを介さずColab Jupyter runtimeへ直接接続し、kernel出力をイベントとして保持するようにした
+- OAuthによるGPUランタイム変更と、複数クライアントで共有するStreamable HTTP daemonを追加
 - OAuthトークンをローカルにキャッシュして更新し、WindowsのOAuthコールバックポートを`8085`に変更、Colab API初期化の不足引数も修正
 
-### 基本利用（単独クライアント）
+### 推奨する起動方式
+
+通常は、共有daemonを一度だけ起動し、Claude CodeとCodexを同じ`http://127.0.0.1:8765/mcp`へ接続してください。最初のクライアントで対象ノートを開いた後、別のクライアントは同じブラウザタブ、ノートブック状態、バックグラウンド実行の`execution_id`を利用できます。具体的なコマンドは下記の「共有daemonの設定」を参照してください。
+
+### 単独stdio利用（互換／fallback）
 
 これはGoogle非公式のコミュニティforkです。通常の公開HTTPS cloneに認証は不要です。`uv`とMCPクライアントを用意して、次のように取得します。
 
@@ -73,21 +81,36 @@ open_colab_browser_connection(
   notebook_url="https://colab.research.google.com/drive/<id>"
 )
 get_cells()
-add_code_cell(code="print('hello')")
+add_code_cell(code="print('hello')", cellIndex=-1)
 run_code_cell(cellId="<cellId>")
 get_code_execution(execution_id="<returned id>")
 ```
 
 `run_code_cell`は`status: "running"`と`execution_id`をすぐ返します。同じツール応答で最終出力まで待ちたい短いセルには、互換用の`run_code_cell_blocking(cellId="<cellId>")`を使います。
 
-### 複数エージェントからの共有操作（任意）
+OAuth設定済みのサーバーでは、ブラウザを使わずに直接runtimeへ接続できます。アクティブなruntimeが1つなら自動選択され、複数ある場合は`runtime_endpoint`を指定します。
 
-同じColabタブと実行状態をClaude Code／Codexなどで共有したい場合だけ、通常のターミナルでdaemonを1つ起動します。
+```text
+open_colab_browser_connection(runtime_endpoint="<endpoint>")
+run_code_cell(code="import time\nfor i in range(3):\n    print(i, flush=True)\n    time.sleep(1)")
+get_code_execution(execution_id="<returned id>", cursor=0, wait_seconds=2)
+get_code_execution(execution_id="<returned id>", cursor=1, wait_seconds=2)
+```
+
+`get_code_execution`の`events`に`stream`、`display_data`、`execute_result`、`error`が連番付きで返ります。取得済みの最大`event_id`を次の`cursor`に渡してください。直接runtime経路では`run_code_cell`の`code`引数を使います。既存の`cellId`経路はブラウザ側のノートブック状態を必要とします。
+
+### 共有daemonの設定（推奨方式）
+
+共有daemonを使う場合は、通常のターミナルでdaemonを1つ起動します。
 
 ```bash
 uv run --directory /path/to/colab-mcp colab-mcp \
-  --transport streamable-http --host 127.0.0.1 --port 8765
+  --transport streamable-http --host 127.0.0.1 --port 8765 \
+  --client-oauth-config /path/to/colab-oauth.json
 ```
+
+OAuthを使わない場合は`--client-oauth-config`を省略できます。その場合、
+`open_colab_browser_connection`でブラウザbridgeへ接続してください。
 
 `127.0.0.1`のまま利用してください。HTTP transportには独自認証がないため、
 loopback外への公開はノート操作と接続用bearer tokenをネットワークへ露出します。
@@ -105,13 +128,10 @@ codex mcp add colab-shared --url http://127.0.0.1:8765/mcp
 最初のクライアントだけで、対象の既存タブ向けに一度呼び出します。
 
 ```text
-open_colab_browser_connection(
-  notebook_url="https://colab.research.google.com/drive/<id>",
-  open_new_tab=false
-)
+prepare_colab_browser_connection()
 ```
 
-返された完全なURLを既存タブのアドレスバーへ貼り付け、2つ目以降のクライアントでは`open_colab_browser_connection`を呼び直さず`get_cells`などを使います。`execution_id`も同じdaemonを使うクライアント間では引き継げますが、別々のstdioプロセスでは共有できません。完全な接続URLはbearer tokenを含むため、公開チャット、issue、ログ、設定、履歴、commitなど第三者が見られる場所へ転載しないでください。endpointは例のように`127.0.0.1`へ限定します。
+返された`TOKEN&PORT`を、既存タブのコマンドパレットにある「MCPプロキシトークン」欄へそのまま貼り付けて接続します。2つ目以降のクライアントでは接続準備ツールを呼び直さず、同じdaemonへ`get_cells`などを送ります。`execution_id`も同じdaemonを使うクライアント間では引き継げますが、別々のstdioプロセスでは共有できません。`TOKEN&PORT`はbearer credentialを含むため、公開チャット、issue、ログ、設定、履歴、commitなど第三者が見られる場所へ転載しないでください。URLをアドレスバーへ貼り付ける従来方式が必要な場合だけ、`open_colab_browser_connection(..., open_new_tab=false)`を使います。endpointは例のように`127.0.0.1`へ限定します。
 
 詳細なOAuth設定、CLI、トラブルシューティングは以下を参照してください。
 
@@ -119,42 +139,52 @@ open_colab_browser_connection(
 
 `colab-mcp` is an [MCP](https://modelcontextprotocol.io) server. It exposes
 Google Colab notebook operations to an MCP client such as Claude Code, Codex,
-Cursor, or another AI coding agent. The default transport is `stdio`, where the
-client launches one local process. A local Streamable HTTP transport is also
-available when several clients should share one process.
+Cursor, or another AI coding agent. The recommended setup is one local
+Streamable HTTP daemon shared by the clients. The CLI default remains `stdio`
+for compatibility with single-client configurations and fallback use.
 
-The browser is the bridge to Colab: the local server opens (or prepares) a
-Colab URL, the user loads it in a browser tab, and the server forwards MCP
-tool calls over the browser's WebSocket connection. The notebook operations
-therefore require an active browser connection. OAuth is optional and only
-needed for programmatic runtime/GPU assignment.
+The MCP server can use two transport paths. With OAuth configured, it connects
+directly to the Colab runtime's Jupyter kernel; the browser is not required for
+code execution or output streaming. The browser WebSocket remains an optional
+compatibility path for notebook UI operations and for clients that do not use
+OAuth.
 
 ## Basic capabilities
 
 The server can target the default scratch notebook or any existing HTTPS
 notebook URL on `colab.research.google.com` / `colab.google.com`. Once connected,
 an agent can manage code and Markdown cells, and run code cells.
-Long-running code can be started in the background and polled separately.
+Long-running code can be started in the background. Direct runtime execution
+retains incremental kernel output in a bounded event buffer; poll
+`get_code_execution` with `cursor` (and optionally `wait_seconds`) to read new
+output without waiting for the cell to finish.
 
-There are 13 registered tools. They are available to the MCP client at startup,
+There are 14 registered tools. They are available to the MCP client at startup,
 even before a browser has connected; notebook calls return an explicit
 `COLAB_NOT_CONNECTED` message until a connection is established.
 
 | Tool | Requires Browser | Requires OAuth | Description |
 |------|:---:|:---:|-------------|
-| `open_colab_browser_connection` | Yes | | Connect to a Colab notebook; set `open_new_tab=false` to prepare a URL for an existing tab |
-| `get_colab_connection_info` | | | Return the current token, port, and complete URL for manual handoff |
-| `add_code_cell` | Yes | | Add a code cell |
-| `add_text_cell` | Yes | | Add a Markdown cell |
+| `open_colab_browser_connection` | No* | Yes* | Connect directly to an active runtime, or use the browser bridge; set `open_new_tab=false` for an existing tab |
+| `prepare_colab_browser_connection` | No | No | Return one `TOKEN&PORT` value for an existing tab's MCP proxy-token field; never opens a browser or waits |
+| `get_colab_connection_info` | | | Inspect current connection coordinates; does not open a browser or prepare a new target |
+| `add_code_cell` | Yes | | Add a code cell at an explicit index (`-1` appends) |
+| `add_text_cell` | Yes | | Add a Markdown cell at an explicit index (`-1` appends) |
 | `get_cells` | Yes | | Read cells, IDs, contents, and outputs |
-| `run_code_cell` | Yes | | Start a cell in the background and return an `execution_id` |
-| `run_code_cell_blocking` | Yes | | Execute a cell and wait for its final result |
+| `run_code_cell` | No* | Yes* | Start code in the background and return an `execution_id`; direct mode streams output |
+| `run_code_cell_blocking` | No* | Yes* | Execute code and wait for its final result |
 | `update_cell` | Yes | | Edit a cell by `cellId` |
 | `delete_cell` | Yes | | Delete a cell by `cellId` |
 | `move_cell` | Yes | | Move a cell by `cellId` |
-| `get_code_execution` | | | Poll a background execution's status/result |
+| `get_code_execution` | | | Poll status and incremental output using `cursor`/`wait_seconds` |
 | `list_code_executions` | | | List retained background executions |
 | `change_runtime` | | Yes | Assign a `T4`, `L4`, `A100`, or `NONE` runtime |
+
+`*` Direct execution requires `--client-oauth-config` and an active runtime.
+Calling `open_colab_browser_connection` with OAuth configured attaches to the
+only active runtime automatically, or accepts `runtime_endpoint` when several
+are active. The existing `cellId` form remains available through the optional
+browser notebook bridge; direct execution accepts a `code` argument.
 
 > **Note:** `execute_cell` was renamed to `run_code_cell` in 2026-06-16 to
 > match the browser-side handler. Pass a `cellId` from `add_code_cell` or
@@ -169,25 +199,27 @@ optional capabilities:
 
 | Area | Official baseline | This mirror |
 |------|-------------------|-------------|
-| Tool discovery | Notebook tools appear after browser connection and may require `notifications/tools/list_changed` | All 13 tools are registered at process startup |
+| Tool discovery | Notebook tools appear after browser connection and may require `notifications/tools/list_changed` | All 14 tools are registered at process startup |
 | Existing notebooks and tabs | Connection flow primarily opens a new URL/tab | Accepts an existing HTTPS `notebook_url`; `open_new_tab=false` prepares a URL for an existing tab |
-| Process lifecycle | A stale process can leave a tab pointed at a dead port | Registry + OS process scan; PID, start time, command, and profile are checked before explicit stop/cleanup |
+| Process lifecycle | A stale process can leave a tab pointed at a dead port | Registry + OS process scan; PID, start time, command, and profile are checked before cleanup, and timed-out peers are marked for safe retry cleanup |
 | Local browser connection | `localhost` dual-stack binding and missing PNA response headers can make Chrome fail to reach the server | IPv4-only `127.0.0.1` binding plus PNA/CORS headers on preflight and WebSocket upgrade |
 | Long-running cells | A cell call occupies the client until completion | `run_code_cell` returns an execution ID immediately; `get_code_execution` and `list_code_executions` provide bounded, process-local tracking; `run_code_cell_blocking` preserves opt-in waiting |
 | Runtime/GPU control | The upstream runtime flag/API is not available in the baseline | Optional OAuth-backed `change_runtime` for T4, L4, A100, or NONE |
 | OAuth token handling | Not provided by the upstream baseline | Cached locally and refreshed as needed |
 | Windows OAuth callback | The default callback port can be blocked | Uses port `8085` |
 | Colab API initialization | Missing required environment argument in the baseline | Supplies the required `Prod()` environment |
-| Multiple clients | Default client-launched processes are isolated | Optional Streamable HTTP daemon lets multiple MCP clients share one browser connection and execution registry |
+| Multiple clients | Default client-launched processes are isolated | Streamable HTTP daemon lets multiple MCP clients share one browser connection and execution registry |
 
-The process-safety actions are explicit: normal startup does not terminate a
-peer. See [CLI Reference](#cli-reference) and
+The process-safety actions are scoped: normal startup does not terminate a
+live peer, while a prior browser-timeout peer explicitly marked as failed may
+be removed on the next matching startup. See [CLI Reference](#cli-reference) and
 [Troubleshooting](#troubleshooting) for the diagnostic commands and browser
 permission details.
 
-## Quick Start (single client, without OAuth)
+## Single-client fallback: stdio (without OAuth)
 
-This is the normal setup for one MCP client. It provides the notebook tools;
+This is the compatibility setup for one MCP client. For the recommended
+Claude Code/Codex handoff flow, use the shared-daemon setup below instead.
 `change_runtime` is optional and requires the OAuth setup described below.
 
 ### 1. Install uv
@@ -239,9 +271,10 @@ Add to your `.mcp.json` (Claude Code, Cursor, etc.):
 }
 ```
 
-This starts one local MCP process for this client. For multiple clients that
-should share one browser connection, use the optional shared-daemon setup
-below.
+This starts one local MCP process for this client. It has its own browser
+connection and execution registry; it cannot share an `execution_id` with a
+different stdio process. For multiple clients, use the recommended shared
+daemon below.
 
 ### 4. Use it
 
@@ -280,11 +313,37 @@ but the browser/MCP bridge cannot guarantee remote continuation or completion
 after disconnect. Reconnect to the same `notebook_url` and use `get_cells` as
 the source of truth for the notebook's execution/output state.
 
+With OAuth and an active runtime, direct execution does not need a browser:
+
+```text
+open_colab_browser_connection(runtime_endpoint="<endpoint>")
+run_code_cell(code="import time\nfor i in range(3):\n    print(i, flush=True)\n    time.sleep(1)")
+get_code_execution(execution_id="<returned id>", cursor=0, wait_seconds=2)
+```
+
+The response contains bounded incremental `events` and a `next_cursor`.
+Pass that cursor to the next call. `stream`, `display_data`, `execute_result`,
+and `error` records are retained. The direct path accepts `code`; the existing
+`cellId` path continues to use the optional browser notebook bridge.
+
+If the target notebook is already open and you only want to hand the local
+connection to that tab, call the dedicated manual-handoff tool instead:
+
+```text
+prepare_colab_browser_connection()
+```
+
+This returns one `TOKEN&PORT` value without opening a browser or waiting. Paste
+that value into the existing tab's Colab MCP proxy-token field. The returned
+value is a bearer credential; do not log, share, or commit it. After preparing
+a handoff, do not call `open_colab_browser_connection` again from another
+client for the same daemon.
+
 For a short cell whose final output must be returned by the same MCP tool call,
 use `run_code_cell_blocking(cellId="<cellId>")`. It deliberately occupies that
 tool call until the browser-side execution finishes.
 
-## Optional/Advanced: Multiple agents and a shared daemon
+## Recommended: Multiple agents and a shared daemon
 
 For a handoff that must keep the *same browser tab* and the same Colab
 WebSocket connection, run one long-lived Streamable HTTP daemon and point both
@@ -346,20 +405,21 @@ url = "http://127.0.0.1:8765/mcp"
 ```
 
 In the first client only, call
-`open_colab_browser_connection(notebook_url="https://colab.research.google.com/drive/<id>", open_new_tab=false)`.
-The tool returns the complete credential-bearing URL without opening a
-browser; paste it into the already-open target Colab tab's address bar. In the
-other client, do not call the open tool again; call `get_cells` (or another
-notebook tool) through the same HTTP URL. If both clients race to call the
-open tool, the daemon serializes the initial browser open and refuses to
-create a second tab. Use the default `open_new_tab=true` only when creating
-the initial browser tab is desired.
+`prepare_colab_browser_connection()`. The dedicated tool returns one
+credential-bearing `TOKEN&PORT` value without opening a browser; paste it into
+the already-open target Colab tab's MCP proxy-token field. In the other client,
+do not call either connection-preparation tool again; call `get_cells` (or
+another notebook tool) through the same HTTP URL. Use
+`open_colab_browser_connection` only when the daemon should open the initial
+browser tab itself.
 
 Keep the daemon alive while switching clients. Its Colab token is generated in
 memory and is not persisted. If the daemon itself is restarted, its token and
 local WebSocket port change; preserving an already connected tab across that
-restart is not guaranteed, so use the returned complete URL to reload the
-existing tab or start a new initial connection.
+restart is not guaranteed. Start a fresh handoff with
+`prepare_colab_browser_connection()` and paste its new `TOKEN&PORT` value, or
+use `open_colab_browser_connection(..., open_new_tab=false)` when the
+URL-based reload route is preferred.
 
 The complete URL returned for a manual connection contains a bearer token. Do
 not paste it into a public chat or issue, logs, configuration, shell history,
@@ -433,9 +493,9 @@ Agent: change_runtime(accelerator="T4")
 > Runtime changed to T4. Endpoint: gpu-t4-s-xxx
 
 Agent: open_colab_browser_connection()
-> Connected. Available notebook tools: add_code_cell, add_text_cell, get_cells, run_code_cell, update_cell, delete_cell, move_cell
+  > Connected. Available notebook tools: add_code_cell, add_text_cell, get_cells, run_code_cell, update_cell, delete_cell, move_cell
 
-Agent: add_code_cell(code="!nvidia-smi")
+Agent: add_code_cell(code="!nvidia-smi", cellIndex=-1)
 > {"cellId": "abc123", ...}
 
 Agent: run_code_cell(cellId="abc123")
@@ -461,7 +521,7 @@ command supports these flags:
 | _(none)_ | Start the MCP server (default — reads/writes JSON-RPC on stdin/stdout) |
 | `-l DIR`, `--log DIR` | Write logs to `DIR`. Defaults to a temp dir under `%TEMP%` / `$TMPDIR` |
 | `-p`, `--enable-proxy` | Enable the runtime proxy that exposes browser-based notebook tools. On by default |
-| `--client-oauth-config PATH` | Path to OAuth client-secrets JSON. Enables the `change_runtime` tool for programmatic GPU assignment |
+| `--client-oauth-config PATH` | Path to OAuth client-secrets JSON. Enables direct runtime connections, streamed execution, and the `change_runtime` tool |
 | `--list-running` | Print verified servers in the selected profile, including OS-discovered servers not in the registry |
 | `--profile NAME` | Select an independent process group (default: `default`; useful for `claude` and `codex`) |
 | `--replace` | Explicitly stop verified peers in this profile before starting. Never implied by normal startup |
@@ -474,7 +534,7 @@ command supports these flags:
 | `--port` | HTTP port (FastMCP default when omitted; ignored for stdio) |
 | `--path` | HTTP endpoint path (default `/mcp`; ignored for stdio) |
 
-The server maintains a tiny registry at `%LOCALAPPDATA%\colab-mcp\registry.json` (Windows) or `~/.colab-mcp/registry.json` (macOS/Linux). Each running instance writes `{pid, port, host, profile, started_at, command}` on startup and removes its own entry on clean shutdown. The MCP token is never stored. Stale/PID-reused entries are pruned automatically on startup. A normal server start never kills another Claude Code or Codex process.
+The server maintains a tiny registry at `%LOCALAPPDATA%\colab-mcp\registry.json` (Windows) or `~/.colab-mcp/registry.json` (macOS/Linux). Each running instance writes `{pid, port, host, profile, started_at, command, state}` on startup and removes its own entry on clean shutdown. The MCP token is never stored. Stale/PID-reused entries are pruned automatically on startup. If a prior client connection timed out, that instance is marked as failed; the next startup cleans only that failed peer in the same profile and transport. A normal start does not terminate a live Claude Code or Codex process.
 
 ## Separate processes and handoff details
 
@@ -486,10 +546,12 @@ above for same-tab and execution-ID sharing. After switching clients, call
 `get_cells` to verify the notebook state; a long cell's continuation remains
 unverified until its returned cell state/output confirms what happened.
 
-For manual recovery, `get_colab_connection_info` returns `token`, `port`, and
-the complete URL separately. The current Colab UI may expose a connection
-dialog or command palette for those individual values; this project does not
-assume an undocumented token/port encoding. Do not use `--replace` or
+For an intentional existing-tab handoff, use
+`prepare_colab_browser_connection()`. It returns one `TOKEN&PORT` value without
+opening a browser or waiting. Paste it into the Colab command-palette dialog's
+single MCP proxy-token field. `get_colab_connection_info` remains a read-only
+diagnostic for the current coordinates and may expose the complete URL.
+Do not use `--replace` or
 `--kill-stale` in an automatically launched MCP command: both are explicit
 maintenance actions.
 
@@ -627,10 +689,11 @@ This community-maintained standalone fork is based on [`googlecolab/colab-mcp`](
 - **`e66ee69`** Match real Colab API signatures (language param, cellId, run_code_cell)
 - **stale-server detection** Process registry + `--list-running` / `--kill-stale` flags + clearer timeout diagnostics — fixes [upstream #84](https://github.com/googlecolab/colab-mcp/discussions/84) "Disconnected from the local Colab MCP server"
 - **full 7-tool notebook surface** — pre-register `get_cells`, `delete_cell`, `move_cell` (previously missing) and rename `execute_cell` → `run_code_cell` to match the browser-side handler. Closes [upstream #69](https://github.com/googlecolab/colab-mcp/discussions/69).
-- **notebook handoff** — `open_colab_browser_connection(notebook_url)` preserves existing notebook query parameters, replaces stale MCP fragment credentials, and adds non-secret cache-busting values; `get_colab_connection_info` exposes separate token/port fields without persisting them.
-- **non-blocking execution by default** — public `run_code_cell` starts the existing browser-side `run_code_cell` handler in a bounded local background registry and returns an `execution_id`; `get_code_execution` and `list_code_executions` expose status/result, while `run_code_cell_blocking` preserves the previous synchronous behavior explicitly.
-- **safe process lifecycle** — process-table discovery covers unregistered instances, validates start time and command line before signaling, and scopes explicit `--replace`/`--kill-stale`/`--stop-pid` actions by profile. Normal startup never kills a peer.
-- **shared daemon transport** — an explicit FastMCP Streamable HTTP mode lets Claude Code and Codex use one long-lived MCP process, one Colab WebSocket, and one browser tab; stdio remains the default.
+- **notebook handoff** — `open_colab_browser_connection(notebook_url)` preserves existing notebook query parameters, replaces stale MCP fragment credentials, and adds non-secret cache-busting values; `get_colab_connection_info` exposes diagnostic coordinates, while `prepare_colab_browser_connection` returns the combined value for Colab's single input field without persisting it.
+- **non-blocking execution by default** — public `run_code_cell` returns an `execution_id`; direct OAuth-backed runtime execution retains bounded incremental kernel events for `get_code_execution(cursor=..., wait_seconds=...)`, while the existing `cellId` browser path and `run_code_cell_blocking` remain compatible.
+- **browser-independent execution** — when OAuth is configured, `jupyter-kernel-client` connects directly to the Colab runtime proxy; browser interaction is optional for code execution and output streaming.
+- **safe process lifecycle** — process-table discovery covers unregistered instances, validates start time and command line before signaling, and scopes explicit `--replace`/`--kill-stale`/`--stop-pid` actions by profile. A timed-out peer is marked failed so the next matching startup can clean it up without terminating live peers.
+- **shared daemon transport** — an explicit FastMCP Streamable HTTP mode lets Claude Code and Codex use one long-lived MCP process, one Colab WebSocket, and one browser tab; stdio remains available as the compatibility fallback.
 
 Google [does not accept external contributions](https://github.com/googlecolab/colab-mcp/blob/main/CONTRIBUTING.md) to the official repo, so these fixes live here.
 

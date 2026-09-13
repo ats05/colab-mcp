@@ -17,10 +17,12 @@ import argparse
 import asyncio
 import datetime
 import ipaddress
+import json
 import logging
 import os
 import tempfile
 import sys
+import time
 import webbrowser
 
 from fastmcp import FastMCP
@@ -32,6 +34,7 @@ from colab_mcp.connection import (
     normalize_notebook_url,
 )
 from colab_mcp.execution import CodeExecutionRegistry
+from colab_mcp.runtime import DirectRuntimeError, DirectRuntimeManager, RuntimeTarget
 from colab_mcp.session import ColabSessionProxy, NOT_CONNECTED_MSG
 from colab_mcp import process_registry
 
@@ -41,19 +44,37 @@ mcp = FastMCP(name="ColabMCP")
 # These will be set during main_async() startup
 _proxy_client = None
 _session_mcp = None
-_colab_client = None  # For runtime API (assign/unassign GPU)
+_colab_client = None  # OAuth-backed runtime API
+_direct_runtime_manager: DirectRuntimeManager | None = None
 _process_profile = "default"
 _last_notebook_url: str | None = None
 _connection_nonce: str | None = None
 _connection_attempt_url: str | None = None
+_connection_attempt_started_at: float | None = None
 _connection_open_lock = asyncio.Lock()
 _process_entry = None
 _execution_registry = CodeExecutionRegistry()
+CONNECTION_FAILURE_GRACE_SECONDS = 60.0
+
+
+def _mark_process_state(state: str) -> None:
+    """Best-effort lifecycle update used to clean failed client restarts."""
+    try:
+        entry = _process_entry
+        process_registry.mark_state(
+            state,
+            pid=os.getpid(),
+            started_at=entry.started_at if entry is not None else None,
+            instance_id=entry.instance_id if entry is not None else None,
+        )
+    except Exception as exc:  # pragma: no cover - diagnostics must not break tools
+        logging.debug("Could not update process state to %s: %s", state, exc)
 
 
 async def _forward_or_stub(tool_name: str, arguments: dict) -> str:
     """Forward a tool call to the browser if connected, otherwise return stub message."""
     if _proxy_client is not None and _proxy_client.is_connected():
+        _mark_process_state("connected")
         try:
             result = await _proxy_client.proxy_mcp_client.call_tool(tool_name, arguments)
             # Extract text from result
@@ -62,6 +83,16 @@ async def _forward_or_stub(tool_name: str, arguments: dict) -> str:
             return str(result)
         except Exception as e:
             return f"Error calling {tool_name}: {e}. Try calling open_colab_browser_connection to reconnect."
+    if (
+        _connection_attempt_url is not None
+        and _connection_attempt_started_at is not None
+        and time.monotonic() - _connection_attempt_started_at
+        >= CONNECTION_FAILURE_GRACE_SECONDS
+    ):
+        # A browser URL was issued and the full connection wait window has
+        # elapsed without a browser connection. This avoids marking a process
+        # failed during the normal manual-tab paste race.
+        _mark_process_state("connection_failed")
     return NOT_CONNECTED_MSG
 
 
@@ -82,38 +113,92 @@ def _connection_info() -> dict[str, object] | None:
 
 @mcp.tool()
 async def get_colab_connection_info() -> dict[str, object]:
-    """Return the current Colab token, port, and a paste-ready URL.
+    """Return current browser and direct-runtime connection information.
+
+    This is a read-only diagnostic: it does not open a browser, wait for a
+    connection, or reserve a new manual-handoff target. Use
+    ``prepare_colab_browser_connection`` when an existing tab should receive
+    fresh credentials.
 
     The token is returned only because the caller explicitly requested this
     tool. It is never written to logs, the process registry, or diagnostics.
-    Use the individual ``token`` and ``port`` fields in Colab's manual
-    connection dialog when a cached tab does not honor a newly opened URL.
+    The ``token`` and ``port`` fields are diagnostic coordinates. For Colab's
+    single manual connection field, use ``prepare_colab_browser_connection``
+    so the returned ``TOKEN&PORT`` value can be pasted as-is.
     """
     info = _connection_info()
-    if info is None:
+    if info is None and _direct_runtime_manager is None:
         return {
             "connected": False,
+            "direct_runtime_connected": False,
             "error": "COLAB_MCP_NOT_INITIALIZED",
             "message": (
                 "The local Colab MCP proxy is not initialized yet. "
                 "Start the server with proxy support and retry."
             ),
         }
-    info["connected"] = _proxy_client.is_connected()
-    if not info["connected"]:
+    if info is None:
+        info = {}
+    info["connected"] = bool(_proxy_client and _proxy_client.is_connected())
+    info["direct_runtime_connected"] = bool(
+        _direct_runtime_manager and _direct_runtime_manager.connected
+    )
+    if _direct_runtime_manager and _direct_runtime_manager.endpoint:
+        info["runtime_endpoint"] = _direct_runtime_manager.endpoint
+    if not info["connected"] and not info["direct_runtime_connected"]:
         info["message"] = (
-            "The local proxy is ready but no Colab browser is connected. "
-            "Open the returned URL in the browser, or use the connection "
-            "dialog/command palette in the current Colab UI."
+            "No direct runtime or browser connection is active. With OAuth "
+            "configured, call open_colab_browser_connection to attach to an "
+            "active runtime. For an already-open tab, call "
+            "prepare_colab_browser_connection; otherwise call "
+            "open_colab_browser_connection to start the browser handoff."
         )
     return info
 
 
 @mcp.tool()
+async def prepare_colab_browser_connection() -> str:
+    """Prepare a manual connection for an already-open Colab tab.
+
+    This tool has no browser side effect and does not wait for a WebSocket
+    connection. It returns only the single ``TOKEN&PORT`` value expected by
+    Colab's MCP proxy-token field. It does not open or target a notebook URL.
+    Once prepared, use the existing tab to connect; do not call the open tool
+    again from a second client for the same daemon.
+    """
+    global _connection_attempt_url, _connection_attempt_started_at
+
+    if _proxy_client is None or _proxy_client.wss is None:
+        return (
+            "COLAB_MCP_NOT_INITIALIZED: The local Colab MCP proxy is not "
+            "initialized yet. Start the server with proxy support and retry."
+        )
+
+    async with _connection_open_lock:
+        connection_token = f"{_proxy_client.wss.token}&{_proxy_client.wss.port}"
+        if _proxy_client.is_connected():
+            return connection_token
+
+        # Never replace a handoff that another client has already prepared.
+        # Return only the current credentials so the caller can use the same
+        # tab without exposing a notebook URL.
+        if _connection_attempt_url is not None:
+            return connection_token
+
+        # An empty marker reserves this process for the existing-tab handoff
+        # without inventing or returning a notebook URL.
+        _connection_attempt_url = ""
+        _connection_attempt_started_at = time.monotonic()
+        return connection_token
+
+
+@mcp.tool()
 async def open_colab_browser_connection(
-    notebook_url: str = "", open_new_tab: bool = True
+    notebook_url: str = "",
+    open_new_tab: bool = True,
+    runtime_endpoint: str = "",
 ) -> str:
-    """Open a Colab notebook and connect it to this MCP server.
+    """Connect to Colab, preferring a direct runtime when OAuth is available.
 
     ``notebook_url`` may be any existing HTTPS Google Colab notebook URL. If
     omitted, the historical ``empty.ipynb`` scratch notebook is opened. The
@@ -121,9 +206,12 @@ async def open_colab_browser_connection(
     port/nonce query identifies the initial URL; one MCP process opens at most
     one browser tab, so a shared daemon can serve multiple MCP clients through
     the same Colab tab. Set ``open_new_tab=False`` to prepare the URL without
-    launching a browser, then paste it into an already-open target tab.
+    launching a browser, then paste it into an already-open target tab. When
+    OAuth is configured, ``runtime_endpoint`` selects a direct runtime and no
+    browser action is required; if omitted, a single active runtime is chosen.
     """
     if _proxy_client is not None and _proxy_client.is_connected():
+        _mark_process_state("connected")
         if notebook_url:
             try:
                 normalized = normalize_notebook_url(notebook_url)
@@ -137,6 +225,27 @@ async def open_colab_browser_connection(
                 "same-tab endpoint change."
             )
         return "Already connected to Colab."
+
+    if runtime_endpoint and _direct_runtime_manager is None:
+        return (
+            "Direct runtime_endpoint connection requires OAuth setup. Start the "
+            "server with --client-oauth-config and retry."
+        )
+
+    if _direct_runtime_manager is not None:
+        try:
+            target = await _direct_runtime_manager.connect(runtime_endpoint)
+            _mark_process_state("connected")
+            return (
+                "Connected directly to Colab runtime "
+                f"{target.endpoint}; browser interaction is not required."
+            )
+        except DirectRuntimeError as exc:
+            # An explicit endpoint means the caller requested the direct path;
+            # do not silently open a browser for a typo or an ambiguous target.
+            if runtime_endpoint:
+                return f"Direct Colab runtime connection failed: {exc}"
+            logging.info("Direct runtime unavailable; using browser bridge: %s", exc)
 
     if _proxy_client is None:
         return (
@@ -153,7 +262,8 @@ async def open_colab_browser_connection(
     except InvalidNotebookUrl as exc:
         return f"Invalid notebook URL: {exc}"
 
-    global _connection_attempt_url, _connection_nonce, _last_notebook_url
+    global _connection_attempt_url, _connection_attempt_started_at
+    global _connection_nonce, _last_notebook_url
     async with _connection_open_lock:
         # Recheck after another concurrent caller has opened the browser. This
         # lets multiple HTTP MCP clients share one daemon without opening
@@ -161,11 +271,23 @@ async def open_colab_browser_connection(
         if _proxy_client.is_connected():
             return "Already connected to Colab. Use the existing tab and call get_cells to verify its state."
         if _connection_attempt_url is not None:
+            if (
+                _connection_attempt_started_at is not None
+                and time.monotonic() - _connection_attempt_started_at
+                >= CONNECTION_FAILURE_GRACE_SECONDS
+            ):
+                _mark_process_state("connection_failed")
+            if _connection_attempt_url == "":
+                return (
+                    "A manual connection has already been prepared for this "
+                    "MCP process. Enter the returned TOKEN&PORT value in the "
+                    "existing Colab tab; no second browser tab was opened."
+                )
             return (
                 "A browser connection has already been opened by this MCP "
                 f"process for {_connection_attempt_url}. No second tab was "
                 "opened. Reload that tab or call get_colab_connection_info "
-                "and use its complete URL/manual connection fields."
+                "to inspect the current connection coordinates."
             )
 
         if _connection_nonce is not None:
@@ -179,6 +301,7 @@ async def open_colab_browser_connection(
         # Keep the token in the fragment. Do not log this URL: it contains a
         # bearer credential. The query string contains only a port and nonce.
         _connection_attempt_url = connection_info.notebook_url
+        _connection_attempt_started_at = time.monotonic()
         _connection_nonce = connection_info.nonce
         _last_notebook_url = connection_info.notebook_url
         if not open_new_tab:
@@ -197,6 +320,7 @@ async def open_colab_browser_connection(
     await _proxy_client.await_proxy_connection()
 
     if _proxy_client.is_connected():
+        _mark_process_state("connected")
         tool_names = await _proxy_client.await_tools_ready()
         tools_text = ", ".join(tool_names) if tool_names else "none discovered"
         return (
@@ -204,6 +328,10 @@ async def open_colab_browser_connection(
             f"Available notebook tools: {tools_text}. You can now create, "
             "edit, and execute cells in the Colab notebook."
         )
+
+    # Mark this instance so a client-launched retry can remove this failed
+    # peer without terminating an active Claude/Codex session.
+    _mark_process_state("connection_failed")
 
     # Timed out — surface diagnostic info about other running servers so the
     # user can recognize the "old browser tab pointed at a dead port" case.
@@ -223,9 +351,9 @@ async def open_colab_browser_connection(
             f"{len(others)} other colab-mcp server(s) are also running: "
             f"{peer_ports}. If you have an old Colab tab open, it may be "
             "pointing at one of those instead of this server. Keep this "
-            "daemon running and reload the opened tab with the URL from "
-            "get_colab_connection_info; use `--kill-stale` only as an "
-            "explicit maintenance action."
+            "daemon running and call prepare_colab_browser_connection, then "
+            "paste its TOKEN&PORT value into the existing tab; use `--kill-stale` "
+            "only as an explicit maintenance action."
         )
     return (
         f"Connection timed out. This server is on port {my_port}. Common causes:\n"
@@ -238,22 +366,31 @@ async def open_colab_browser_connection(
         "settings -> reset the 'Insecure content' / 'Other' permission and retry.\n"
         "  3. Browser tab was never opened - make sure your default browser "
         "is set and not blocking pop-ups for python.exe.\n"
-        "  4. Manual fallback - call get_colab_connection_info and open its "
-        "complete URL in the browser address bar. If the current Colab UI has "
-        "a manual connection dialog, its token and port are also returned. "
-        "This can switch an existing tab without closing the browser."
+        "  4. Existing-tab handoff - call prepare_colab_browser_connection. "
+        "It returns one TOKEN&PORT value for Colab's single manual "
+        "connection field without opening another tab."
     )
 
 
 @mcp.tool()
-async def add_code_cell(code: str = "", cellIndex: int = 0, language: str = "python") -> str:
-    """Add a new code cell to the Colab notebook. Requires an active browser connection via open_colab_browser_connection."""
+async def add_code_cell(cellIndex: int, code: str = "", language: str = "python") -> str:
+    """Add a code cell at ``cellIndex``; use ``-1`` to append.
+
+    ``cellIndex`` is intentionally required so an omitted placement can never
+    silently insert a cell at the beginning of an existing notebook.
+    Requires an active browser connection via open_colab_browser_connection.
+    """
     return await _forward_or_stub("add_code_cell", {"code": code, "cellIndex": cellIndex, "language": language})
 
 
 @mcp.tool()
-async def add_text_cell(content: str = "", cellIndex: int = -1) -> str:
-    """Add a new text/markdown cell to the Colab notebook. Requires an active browser connection via open_colab_browser_connection."""
+async def add_text_cell(cellIndex: int, content: str = "") -> str:
+    """Add a Markdown cell at ``cellIndex``; use ``-1`` to append.
+
+    ``cellIndex`` is intentionally required so an omitted placement can never
+    silently change the order of an existing notebook. Requires an active
+    browser connection via open_colab_browser_connection.
+    """
     return await _forward_or_stub("add_text_cell", {"content": content, "cellIndex": cellIndex})
 
 
@@ -264,26 +401,56 @@ async def get_cells() -> str:
 
 
 @mcp.tool()
-async def run_code_cell(cellId: str = "") -> dict[str, object]:
-    """Start a code cell in the background and return an execution ID.
+async def run_code_cell(cellId: str = "", code: str = "") -> dict[str, object]:
+    """Start code in the background and return an execution ID.
 
     This is the default execution path, so the MCP client remains available
-    while any cell runs. The local task tracks the browser-side call, but its
-    execution_id is local to this MCP process and cannot be resumed by a
-    different Claude Code/Codex process. Disconnecting
-    the process may or may not leave code already submitted to Colab running;
-    this bridge cannot guarantee remote continuation or completion. Use
-    get_cells after a handoff to inspect the notebook's actual state/output.
+    while any cell runs. If a direct OAuth-backed runtime is connected, pass
+    ``code`` and execution/output streaming happen without a browser. The
+    ``cellId`` form remains available through the browser notebook bridge.
     """
-    if not cellId:
+    if not cellId and not code:
         return {
             "status": "failed",
-            "error": "cellId is required to start a background code execution.",
+            "error": "cellId or code is required to start a background code execution.",
         }
-    if _proxy_client is None or not _proxy_client.is_connected():
+    if code and _direct_runtime_manager is not None and not _direct_runtime_manager.connected:
+        try:
+            await _direct_runtime_manager.connect()
+        except DirectRuntimeError as exc:
+            return {"status": "failed", "error": str(exc)}
+    direct_runtime = (
+        _direct_runtime_manager.runtime
+        if _direct_runtime_manager and _direct_runtime_manager.connected
+        else None
+    )
+    if direct_runtime is None and (_proxy_client is None or not _proxy_client.is_connected()):
+        if code and _direct_runtime_manager is None:
+            return {
+                "status": "failed",
+                "error": (
+                    "Direct execution requires OAuth runtime setup. Start with "
+                    "--client-oauth-config, then call open_colab_browser_connection "
+                    "to attach to a runtime."
+                ),
+            }
         return {"status": "failed", "error": NOT_CONNECTED_MSG}
+    if direct_runtime is not None and not code and (
+        _proxy_client is None or not _proxy_client.is_connected()
+    ):
+        return {
+            "status": "failed",
+            "error": (
+                "Direct runtime execution requires the code argument. The "
+                "cellId form is provided by the optional browser notebook bridge."
+            ),
+        }
 
-    async def runner() -> str:
+    async def runner(publish) -> str:
+        if direct_runtime is not None and code:
+            outputs = await direct_runtime.execute(code, publish)
+            return json.dumps(outputs, ensure_ascii=False)
+
         result = await _forward_or_stub("run_code_cell", {"cellId": cellId})
         # Treat transport loss as a failed local execution so callers do not
         # mistake an error message for a completed cell result.
@@ -293,16 +460,17 @@ async def run_code_cell(cellId: str = "") -> dict[str, object]:
             or result.startswith("Error calling ")
         ):
             raise RuntimeError(result)
+        publish({"output_type": "result", "text": result})
         return result
 
     try:
-        return await _execution_registry.start(cellId, runner)
+        return await _execution_registry.start(cellId or "<direct>", runner)
     except Exception as exc:  # pragma: no cover - defensive server boundary
         return {"status": "failed", "error": str(exc)}
 
 
 @mcp.tool()
-async def run_code_cell_blocking(cellId: str = "") -> str:
+async def run_code_cell_blocking(cellId: str = "", code: str = "") -> str:
     """Execute a code cell and wait for its final browser-side result.
 
     Prefer run_code_cell for long-running work so the MCP client remains
@@ -310,13 +478,38 @@ async def run_code_cell_blocking(cellId: str = "") -> str:
     previous behavior for short cells and callers that need the result in the
     same tool response.
     """
+    if code and _direct_runtime_manager is not None and not _direct_runtime_manager.connected:
+        try:
+            await _direct_runtime_manager.connect()
+        except DirectRuntimeError as exc:
+            return f"Direct Colab runtime connection failed: {exc}"
+    if _direct_runtime_manager and _direct_runtime_manager.runtime and code:
+        outputs = await _direct_runtime_manager.runtime.execute(code, lambda _event: None)
+        return json.dumps(outputs, ensure_ascii=False)
+    if _direct_runtime_manager and _direct_runtime_manager.connected and not code:
+        return (
+            "Direct runtime execution requires the code argument. The cellId "
+            "form is provided by the optional browser notebook bridge."
+        )
     return await _forward_or_stub("run_code_cell", {"cellId": cellId})
 
 
 @mcp.tool()
-async def get_code_execution(execution_id: str) -> dict[str, object]:
-    """Get the status/result of a background run_code_cell execution."""
-    return _execution_registry.get(execution_id)
+async def get_code_execution(
+    execution_id: str,
+    cursor: int = 0,
+    wait_seconds: float = 0.0,
+) -> dict[str, object]:
+    """Get status and incremental output for a background execution.
+
+    ``cursor`` is the last received event ID. Set ``wait_seconds`` to a small
+    positive value for long-polling when no new output has arrived yet.
+    """
+    return await _execution_registry.get_events(
+        execution_id,
+        cursor=cursor,
+        wait_seconds=wait_seconds,
+    )
 
 
 @mcp.tool()
@@ -366,7 +559,34 @@ async def change_runtime(accelerator: str = "T4") -> str:
 
         # Assign new VM
         result = _colab_client.assign(notebook_hash, variant, acc)
-        return f"Runtime changed to {accelerator}. Endpoint: {result.endpoint}. Use open_colab_browser_connection to connect to the new runtime."
+        if isinstance(result, dict):
+            endpoint = result["assignment"].endpoint
+        else:
+            endpoint = result.endpoint
+        if _direct_runtime_manager is not None:
+            # The assignment response in older Colab API variants does not
+            # always include runtimeProxyInfo. Refresh the assignment list to
+            # obtain the current short-lived URL/token pair.
+            assignments = await asyncio.to_thread(_colab_client.list_assignments)
+            selected = next(
+                (item for item in assignments if item.endpoint == endpoint), None
+            )
+            if selected is not None:
+                await _direct_runtime_manager.attach_target(
+                    RuntimeTarget(
+                        endpoint=selected.endpoint,
+                        url=selected.runtime_proxy_info.url,
+                        token=selected.runtime_proxy_info.token,
+                    )
+                )
+                return (
+                    f"Runtime changed to {accelerator}. Directly connected to "
+                    f"endpoint: {endpoint}. Browser interaction is not required."
+                )
+        return (
+            f"Runtime changed to {accelerator}. Endpoint: {endpoint}. "
+            "Use open_colab_browser_connection to connect to the new runtime."
+        )
     except Exception as e:
         return f"Failed to change runtime: {e}"
 
@@ -405,7 +625,10 @@ def parse_args(v):
     )
     parser.add_argument(
         "--client-oauth-config",
-        help="Path to OAuth client secrets JSON for Colab API access (enables change_runtime tool).",
+        help=(
+            "Path to OAuth client secrets JSON for direct runtime execution "
+            "and the change_runtime tool."
+        ),
         action="store",
         default=None,
     )
@@ -541,7 +764,8 @@ async def _run_mcp_transport(args) -> None:
 
 
 async def main_async():
-    global _proxy_client, _session_mcp, _colab_client, _process_profile, _process_entry
+    global _proxy_client, _session_mcp, _colab_client, _direct_runtime_manager
+    global _process_profile, _process_entry
     args = parse_args(sys.argv[1:])
     _process_profile = args.profile
     init_logger(args.log)
@@ -593,6 +817,18 @@ async def main_async():
     if dead:
         logging.info(f"Pruned {dead} stale entries from process registry")
 
+    failed = process_registry.cleanup_unhealthy(
+        profile=args.profile,
+        transport=args.transport,
+    )
+    if failed:
+        logging.info(
+            "Removed %d failed %s peer(s) in profile=%s",
+            len(failed),
+            args.transport,
+            args.profile,
+        )
+
     if args.enable_proxy:
         logging.info("enabling session proxy tools")
         _session_mcp = ColabSessionProxy()
@@ -621,6 +857,7 @@ async def main_async():
             logging.info("initializing Colab API client with OAuth")
             session = get_credentials(args.client_oauth_config)
             _colab_client = ColabClient(Prod(), session)
+            _direct_runtime_manager = DirectRuntimeManager(_colab_client)
             logging.info("Colab API client ready")
         except Exception as e:
             logging.warning(f"Failed to initialize Colab API client: {e}")
@@ -630,6 +867,8 @@ async def main_async():
 
     finally:
         await _execution_registry.close()
+        if _direct_runtime_manager is not None:
+            await _direct_runtime_manager.close()
         if args.enable_proxy and _session_mcp:
             await _session_mcp.cleanup()
         # Always unregister so a clean shutdown doesn't leave a stale entry.

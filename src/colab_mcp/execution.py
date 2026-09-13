@@ -10,12 +10,15 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass, field
+import threading
 import time
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 import uuid
 
 
-ExecutionRunner = Callable[[], Awaitable[str]]
+ExecutionPublisher = Callable[[dict], None]
+ExecutionRunner = Callable[[ExecutionPublisher], Awaitable[str]]
+MAX_RETAINED_EVENTS = 256
 
 
 @dataclass
@@ -28,6 +31,11 @@ class CodeExecution:
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     task: asyncio.Task[None] | None = field(default=None, repr=False)
+    events: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    next_event_id: int = field(default=1, repr=False)
+    events_changed: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
+    event_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def as_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -42,6 +50,7 @@ class CodeExecution:
             value["result"] = self.result
         if self.error is not None:
             value["error"] = self.error
+        value["next_cursor"] = self.next_event_id - 1
         return value
 
 
@@ -122,6 +131,7 @@ class CodeExecutionRegistry:
         execution = CodeExecution(
             execution_id=uuid.uuid4().hex,
             cell_id=cell_id,
+            loop=asyncio.get_running_loop(),
         )
         self._entries[execution.execution_id] = execution
         execution.task = asyncio.create_task(self._run(execution, runner))
@@ -134,7 +144,9 @@ class CodeExecutionRegistry:
 
     async def _run(self, execution: CodeExecution, runner: ExecutionRunner) -> None:
         try:
-            execution.result = await runner()
+            execution.result = await runner(
+                lambda event: self.publish(execution.execution_id, event)
+            )
             execution.status = "completed"
         except asyncio.CancelledError:
             execution.status = "failed"
@@ -145,6 +157,38 @@ class CodeExecutionRegistry:
             execution.error = str(exc) or exc.__class__.__name__
         finally:
             execution.finished_at = time.time()
+            execution.events_changed.set()
+
+    def publish(self, execution_id: str, event: dict[str, Any]) -> None:
+        """Append one output event from the kernel reader thread.
+
+        The direct Jupyter client reads IOPub on a worker thread, so this
+        method schedules the bounded list update on the owning event loop when
+        called from the kernel reader thread.
+        """
+        execution = self._entries.get(execution_id)
+        if execution is None:
+            return
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is execution.loop:
+            self._append_event(execution, event)
+            execution.events_changed.set()
+        elif execution.loop is not None:
+            self._append_event(execution, event)
+            execution.loop.call_soon_threadsafe(execution.events_changed.set)
+
+    @staticmethod
+    def _append_event(execution: CodeExecution, event: dict[str, Any]) -> None:
+        with execution.event_lock:
+            item = dict(event)
+            item["event_id"] = execution.next_event_id
+            execution.next_event_id += 1
+            execution.events.append(item)
+            if len(execution.events) > MAX_RETAINED_EVENTS:
+                del execution.events[: len(execution.events) - MAX_RETAINED_EVENTS]
 
     @staticmethod
     def _consume_task_exception(task: asyncio.Task[None]) -> None:
@@ -167,6 +211,68 @@ class CodeExecutionRegistry:
                 "error": "Execution ID is unknown or has expired from the local registry.",
             }
         return execution.as_dict()
+
+    async def get_events(
+        self,
+        execution_id: str,
+        *,
+        cursor: int = 0,
+        wait_seconds: float = 0.0,
+    ) -> dict[str, object]:
+        """Return output events after ``cursor``, optionally long-polling."""
+        if cursor < 0:
+            raise ValueError("cursor must be non-negative")
+        if wait_seconds < 0:
+            raise ValueError("wait_seconds must be non-negative")
+        self._prune()
+        execution = self._entries.get(execution_id)
+        if execution is None:
+            return {
+                "execution_id": execution_id,
+                "status": "unknown",
+                "events": [],
+                "next_cursor": cursor,
+                "done": True,
+                "error": "Execution ID is unknown or has expired from the local registry.",
+            }
+
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            with execution.event_lock:
+                events = [
+                    event for event in execution.events if event["event_id"] > cursor
+                ]
+                events_retained = list(execution.events)
+            if events or execution.status != "running" or wait_seconds == 0:
+                value = execution.as_dict()
+                value["events"] = events
+                value["done"] = execution.status != "running"
+                if events_retained and cursor < events_retained[0]["event_id"] - 1:
+                    value["events_truncated"] = True
+                    value["oldest_cursor"] = events_retained[0]["event_id"] - 1
+                return value
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                value = execution.as_dict()
+                value["events"] = []
+                value["done"] = execution.status != "running"
+                return value
+            execution.events_changed.clear()
+            # Re-check after clearing to avoid losing an event that arrived
+            # between the first inspection and clear().
+            with execution.event_lock:
+                has_new_events = any(
+                    event["event_id"] > cursor for event in execution.events
+                )
+            if has_new_events:
+                continue
+            try:
+                await asyncio.wait_for(execution.events_changed.wait(), remaining)
+            except asyncio.TimeoutError:
+                value = execution.as_dict()
+                value["events"] = []
+                value["done"] = execution.status != "running"
+                return value
 
     def list(self) -> list[dict[str, object]]:
         self._prune()

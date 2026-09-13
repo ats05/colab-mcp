@@ -13,7 +13,7 @@ Usage:
 
 The disconnected smoke verifies:
   - Server starts cleanly
-  - All 13 tools are visible at startup (connection, notebook, GPU,
+  - All 14 tools are visible at startup (connection, notebook, GPU,
     connection-info, and background-execution tools)
   - Each notebook tool returns NOT_CONNECTED_MSG when called without a browser
   - The old `execute_cell` no longer exists (rename regression check)
@@ -39,6 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 EXPECTED_TOOLS = {
     "open_colab_browser_connection",
+    "prepare_colab_browser_connection",
     "add_code_cell",
     "add_text_cell",
     "get_cells",
@@ -120,7 +121,7 @@ async def smoke_disconnected(client: Client) -> int:
     if extra:
         print(_yellow(f"  EXTRA (unexpected but not fatal): {sorted(extra)}"))
     if not missing:
-        print(_green("  OK — all 13 expected tools present"))
+        print(_green("  OK — all 14 expected tools present"))
 
     print("\n[2/5] Checking execute_cell was removed (rename regression)...")
     if "execute_cell" in tool_names:
@@ -147,8 +148,8 @@ async def smoke_disconnected(client: Client) -> int:
 
     print("\n[4/5] Calling notebook tools while disconnected — expect NOT_CONNECTED_MSG...")
     test_calls = [
-        ("add_code_cell", {"code": "print('hi')"}),
-        ("add_text_cell", {"content": "hello"}),
+        ("add_code_cell", {"code": "print('hi')", "cellIndex": -1}),
+        ("add_text_cell", {"content": "hello", "cellIndex": -1}),
         ("get_cells", {}),
         ("run_code_cell_blocking", {"cellId": "fake"}),
         ("update_cell", {"cellId": "fake", "content": "x"}),
@@ -181,6 +182,15 @@ async def smoke_disconnected(client: Client) -> int:
         print(_green("  OK — get_colab_connection_info is callable"))
     else:
         print(_red("  FAIL — get_colab_connection_info returned no connection data"))
+        failures += 1
+
+    prepared = await client.call_tool("prepare_colab_browser_connection", {})
+    prepared_text = _result_text(prepared).strip()
+    token_parts = prepared_text.split("&")
+    if len(token_parts) == 2 and token_parts[0] and token_parts[1].isdigit():
+        print(_green("  OK — prepare_colab_browser_connection returns a TOKEN&PORT value without opening a browser"))
+    else:
+        print(_red("  FAIL — prepare_colab_browser_connection returned no manual credentials"))
         failures += 1
 
     for name, args in (
@@ -218,7 +228,10 @@ async def smoke_connected(client: Client) -> int:
         return "\n".join(c.text for c in result.content if hasattr(c, "text"))
 
     print("\n[2/7] add_code_cell...")
-    result = await client.call_tool("add_code_cell", {"code": "import sys; print(sys.version)"})
+    result = await client.call_tool(
+        "add_code_cell",
+        {"code": "import sys; print(sys.version)", "cellIndex": -1},
+    )
     add_text = _text(result)
     print(f"    -> {add_text[:300]}")
     # The browser returns {"newCellId": "..."} as the result text (JSON).

@@ -59,9 +59,9 @@ class ColabConnectionInfo:
     nonce: str
 
     def as_dict(self) -> dict[str, object]:
-        # Keep token and port as separate fields.  This is useful when the
-        # Colab UI asks for them separately, while ``url`` is convenient for
-        # an agent or a browser handoff.
+        # Keep the coordinates separate for diagnostics and URL construction.
+        # Colab's current manual dialog expects the combined ``TOKEN&PORT``
+        # value exposed by ``prepare_colab_browser_connection`` instead.
         return {
             "notebook_url": self.notebook_url,
             "url": self.url,
